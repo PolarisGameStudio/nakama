@@ -1,65 +1,75 @@
-# ---- Stage 1: Build Nakama binary ----
-FROM golang:1.25-alpine AS builder
+## Copyright 2018 The Nakama Authors
+##
+## Licensed under the Apache License, Version 2.0 (the "License");
+## you may not use this file except in compliance with the License.
+## You may obtain a copy of the License at
+##
+## http://www.apache.org/licenses/LICENSE-2.0
+##
+## Unless required by applicable law or agreed to in writing, software
+## distributed under the License is distributed on an "AS IS" BASIS,
+## WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+## See the License for the specific language governing permissions and
+## limitations under the License.
 
-ENV GO111MODULE=on \
-    CGO_ENABLED=0
+# docker build . --build-arg commit="$(git rev-parse --short HEAD)" --build-arg version=v2.1.1 -t heroiclabs/nakama:2.1.1
+# docker build . --build-arg commit="$(git rev-parse --short HEAD)" --build-arg version="$(git rev-parse --short HEAD)" -t heroiclabs/nakama-prerelease:"$(git rev-parse --short HEAD)"
 
-RUN apk add --no-cache git make
+FROM golang:1.25.0-bookworm AS builder
 
-WORKDIR /go/src/github.com/heroiclabs/nakama
+ARG COMMIT
+ARG VERSION
+ARG TARGETOS
+ARG TARGETARCH
+
+ENV GOOS=$TARGETOS
+ENV GOARCH=$TARGETARCH
+ENV CGO_ENABLED=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && \
+    apt-get -y upgrade && \
+    apt-get install -y --no-install-recommends ca-certificates gcc libc6-dev
+
+WORKDIR /go/build/nakama
 COPY . .
+RUN go build -o /go/build-out/nakama -trimpath -mod=vendor -gcflags "-trimpath $PWD" -asmflags "-trimpath $PWD" -ldflags "-s -w -X main.version=$VERSION -X main.commitID=$COMMIT"
 
-RUN go build -trimpath -mod=vendor -ldflags "-s -w" -o nakama .
+FROM debian:bookworm-slim
 
+ARG VERSION
 
-# ---- Stage 2: Build Nakama runtime modules ----
-FROM node:18-alpine AS modules
+LABEL maintainer="Heroic Labs"
+LABEL contact="support@heroiclabs.com"
+LABEL version=$VERSION
+LABEL variant=nakama
+LABEL description="Distributed server for social and realtime games and apps."
 
-WORKDIR /build
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Copy your Nakama runtime modules
-COPY data/modules ./data/modules
+RUN mkdir -p /nakama/data/modules && \
+    apt-get update && \
+    apt-get -y upgrade && \
+    apt-get install -y --no-install-recommends ca-certificates tzdata iproute2 tini && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install TypeScript and compile to JS
-RUN npm install -g typescript && \
-    mkdir -p ./data/modules/build && \
-    cd ./data/modules && \
-    if ls *.ts 1> /dev/null 2>&1; then \
-        echo "Compiling TypeScript modules..."; \
-        if [ -f tsconfig.json ]; then \
-            tsc || echo "TypeScript compilation completed with warnings (expected if Nakama types are not defined)"; \
-        else \
-            tsc --outDir ./build --target ES2015 --module commonjs --moduleResolution node || echo "TypeScript compilation completed with warnings"; \
-        fi; \
-        [ -d ./build ] || mkdir -p ./build; \
-    else \
-        mkdir -p ./build; \
-    fi
+WORKDIR /nakama/
 
+# Create directory structure for runtime modules
+RUN mkdir -p /nakama/data/modules/lua /nakama/config
 
-# ---- Stage 3: Final lightweight runtime image ----
-FROM alpine:3.19
+COPY --from=builder "/go/build-out/nakama" /nakama/
 
-RUN apk add --no-cache ca-certificates
-
-# Nakama directory structure
-RUN mkdir -p /nakama/config /nakama/data /nakama/logs /nakama/data/modules /nakama/data/modules/lua
-
-# Copy Nakama binary
-COPY --from=builder /go/src/github.com/heroiclabs/nakama/nakama /nakama/nakama
-
-# Copy compiled JS modules from build stage
-COPY --from=modules /build/data/modules/build /nakama/data/modules
+# Copy compiled JS modules (pre-compiled outside Docker)
+COPY data/modules/build/ /nakama/data/modules/
 
 # Copy Lua modules from source
-COPY data/modules /nakama/data/modules
-
-RUN addgroup -S nakama && adduser -S nakama -G nakama && chown -R nakama:nakama /nakama
-
-USER nakama
-WORKDIR /nakama
+COPY data/modules/lua/ /nakama/data/modules/lua/
 
 EXPOSE 7349 7350 7351
 
-ENTRYPOINT ["/nakama/nakama"]
-CMD ["--name", "nakama", "--config", "/nakama/config/config.yaml", "--logger.level", "info"]
+ENTRYPOINT ["tini", "--", "/nakama/nakama"]
+
+HEALTHCHECK --interval=30s --timeout=10s \
+  CMD /nakama/nakama healthcheck || exit 1
