@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nakama-runtime.fullname" . }}
+  labels:
+    {{- include "nakama-runtime.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "nakama-runtime.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nakama-runtime.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+      - name: nakama
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: grpc
+          containerPort: 7349
+          protocol: TCP
+        - name: http
+          containerPort: 7350
+          protocol: TCP
+        - name: console
+          containerPort: 7351
+          protocol: TCP
+        volumeMounts:
+        - name: nakama-config
+          mountPath: /nakama/config.yml
+          subPath: config.yml
+          readOnly: true
+        {{- if .Values.persistence.enabled }}
+        - name: nakama-data
+          mountPath: {{ .Values.nakama.dataDir }}
+        {{- end }}
+        - name: nakama-logs
+          mountPath: /nakama/logs
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: {{ .Values.healthCheck.liveness.initialDelaySeconds }}
+          periodSeconds: {{ .Values.healthCheck.liveness.periodSeconds }}
+          timeoutSeconds: {{ .Values.healthCheck.liveness.timeoutSeconds }}
+          successThreshold: {{ .Values.healthCheck.liveness.successThreshold }}
+          failureThreshold: {{ .Values.healthCheck.liveness.failureThreshold }}
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+            scheme: HTTP
+          initialDelaySeconds: {{ .Values.healthCheck.readiness.initialDelaySeconds }}
+          periodSeconds: {{ .Values.healthCheck.readiness.periodSeconds }}
+          timeoutSeconds: {{ .Values.healthCheck.readiness.timeoutSeconds }}
+          successThreshold: {{ .Values.healthCheck.readiness.successThreshold }}
+          failureThreshold: {{ .Values.healthCheck.readiness.failureThreshold }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+      volumes:
+      - name: nakama-config
+        configMap:
+          name: {{ include "nakama-runtime.fullname" . }}-config
+      {{- if .Values.persistence.enabled }}
+      - name: nakama-data
+        persistentVolumeClaim:
+          claimName: {{ include "nakama-runtime.fullname" . }}-data
+      {{- else }}
+      - name: nakama-data
+        emptyDir: {}
+      {{- end }}
+      - name: nakama-logs
+        emptyDir: {}

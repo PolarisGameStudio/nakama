@@ -1,0 +1,171 @@
+---
+# Nakama All-in-One Kubernetes Manifest
+# This file contains all resources needed to deploy Nakama on EKS
+# Usage: kubectl apply -f k8s/nakama-all-in-one.yaml
+
+# ConfigMap with Nakama configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nakama-config
+  namespace: default
+  labels:
+    app: nakama
+data:
+  config.yml: |
+    name: nakama
+    data_dir: "/nakama/data"
+
+    runtime:
+      path: "/nakama/data/modules"
+      js_entrypoint: "index.js"
+      http_key: "defaultkey"
+      lua_path: "/nakama/data/modules"
+
+    socket:
+      server_key: "defaultkey"
+      port: 7350
+      max_message_size_bytes: 4096
+      write_wait_ms: 5000
+      pong_wait_ms: 25000
+      ping_period_ms: 20000
+
+    session:
+      encryption_key: "defaultencryptionkey"
+      token_expiry_sec: 7200
+
+    console:
+      port: 7351
+      username: "admin"
+      password: "password"
+
+    logger:
+      level: "INFO"
+      stdout: true
+      file: "/nakama/logs/nakama.log"
+
+    database:
+      address:
+        - "root@cockroachdb:26257"
+
+---
+# PersistentVolumeClaim for Nakama data
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nakama-data-pvc
+  namespace: default
+  labels:
+    app: nakama
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Nakama Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nakama
+  namespace: default
+  labels:
+    app: nakama
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nakama
+  template:
+    metadata:
+      labels:
+        app: nakama
+    spec:
+      containers:
+      - name: nakama
+        image: intelliverse-nakama:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: grpc
+          containerPort: 7349
+          protocol: TCP
+        - name: http
+          containerPort: 7350
+          protocol: TCP
+        - name: console
+          containerPort: 7351
+          protocol: TCP
+        volumeMounts:
+        - name: nakama-config
+          mountPath: /nakama/config.yml
+          subPath: config.yml
+          readOnly: true
+        - name: nakama-data
+          mountPath: /nakama/data
+        - name: nakama-logs
+          mountPath: /nakama/logs
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 7350
+            scheme: HTTP
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 7350
+            scheme: HTTP
+          initialDelaySeconds: 20
+          periodSeconds: 5
+          timeoutSeconds: 3
+          successThreshold: 1
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+      volumes:
+      - name: nakama-config
+        configMap:
+          name: nakama-config
+      - name: nakama-data
+        persistentVolumeClaim:
+          claimName: nakama-data-pvc
+      - name: nakama-logs
+        emptyDir: {}
+
+---
+# Nakama Service (LoadBalancer)
+apiVersion: v1
+kind: Service
+metadata:
+  name: nakama-service
+  namespace: default
+  labels:
+    app: nakama
+spec:
+  type: LoadBalancer
+  selector:
+    app: nakama
+  ports:
+  - name: grpc
+    port: 7349
+    targetPort: 7349
+    protocol: TCP
+  - name: http
+    port: 7350
+    targetPort: 7350
+    protocol: TCP
+  - name: console
+    port: 7351
+    targetPort: 7351
+    protocol: TCP

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nakama-data-pvc
+  namespace: default
+  labels:
+    app: nakama
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  # Uncomment and configure for AWS EKS with EBS
+  # storageClassName: gp3

@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nakama-config
+  namespace: default
+  labels:
+    app: nakama
+data:
+  config.yml: |
+    name: nakama
+    data_dir: "/nakama/data"
+
+    runtime:
+      # Path for JavaScript/TypeScript runtime modules
+      path: "/nakama/data/modules"
+      # Entry point for TypeScript/JavaScript runtime
+      js_entrypoint: "index.js"
+      # HTTP key for runtime function calls
+      http_key: "defaultkey"
+      # Lua search path
+      lua_path: "/nakama/data/modules"
+
+    socket:
+      # Socket server settings
+      server_key: "defaultkey"
+      port: 7350
+      # Maximum number of concurrent connections
+      max_message_size_bytes: 4096
+      # Maximum number of seconds to wait for WebSocket connections to be upgraded
+      write_wait_ms: 5000
+      # Timeout for sending pong messages on WebSocket connections
+      pong_wait_ms: 25000
+      # How often to send ping messages to WebSocket connections
+      ping_period_ms: 20000
+
+    session:
+      # Session encryption key
+      encryption_key: "defaultencryptionkey"
+      # Token expiry in seconds
+      token_expiry_sec: 7200
+
+    console:
+      # Console port
+      port: 7351
+      # Console username
+      username: "admin"
+      # Console password
+      password: "password"
+
+    logger:
+      # Log level: DEBUG, INFO, WARN, ERROR
+      level: "INFO"
+      # Output format: JSON or Stackdriver
+      stdout: true
+      # Log file path
+      file: "/nakama/logs/nakama.log"
+
+    database:
+      # Database connection addresses
+      address:
+        - "root@cockroachdb:26257"

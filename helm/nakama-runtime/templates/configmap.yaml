@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nakama-runtime.fullname" . }}-config
+  labels:
+    {{- include "nakama-runtime.labels" . | nindent 4 }}
+data:
+  config.yml: |
+    name: {{ .Values.nakama.name }}
+    data_dir: "{{ .Values.nakama.dataDir }}"
+
+    runtime:
+      path: "{{ .Values.nakama.runtime.path }}"
+      js_entrypoint: "{{ .Values.nakama.runtime.jsEntrypoint }}"
+      http_key: "{{ .Values.nakama.runtime.httpKey }}"
+      lua_path: "{{ .Values.nakama.runtime.luaPath }}"
+
+    socket:
+      server_key: "{{ .Values.nakama.socket.serverKey }}"
+      port: {{ .Values.nakama.socket.port }}
+      max_message_size_bytes: {{ .Values.nakama.socket.maxMessageSizeBytes }}
+      write_wait_ms: {{ .Values.nakama.socket.writeWaitMs }}
+      pong_wait_ms: {{ .Values.nakama.socket.pongWaitMs }}
+      ping_period_ms: {{ .Values.nakama.socket.pingPeriodMs }}
+
+    session:
+      encryption_key: "{{ .Values.nakama.session.encryptionKey }}"
+      token_expiry_sec: {{ .Values.nakama.session.tokenExpirySec }}
+
+    console:
+      port: {{ .Values.nakama.console.port }}
+      username: "{{ .Values.nakama.console.username }}"
+      password: "{{ .Values.nakama.console.password }}"
+
+    logger:
+      level: "{{ .Values.nakama.logger.level }}"
+      stdout: {{ .Values.nakama.logger.stdout }}
+      file: "{{ .Values.nakama.logger.file }}"
+
+    database:
+      address:
+        - "{{ .Values.nakama.database.address }}"

@@ -1,0 +1,90 @@
+# Default values for nakama-runtime Helm chart
+
+# Nakama image configuration
+image:
+  repository: intelliverse-nakama
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Number of Nakama replicas
+replicaCount: 1
+
+# Service configuration
+service:
+  type: LoadBalancer
+  grpcPort: 7349
+  httpPort: 7350
+  consolePort: 7351
+
+# Resource limits and requests
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "2Gi"
+    cpu: "1000m"
+
+# Persistent storage
+persistence:
+  enabled: true
+  storageClass: ""  # Use default storage class
+  accessMode: ReadWriteOnce
+  size: 10Gi
+
+# Nakama configuration
+nakama:
+  name: nakama
+  dataDir: "/nakama/data"
+  
+  runtime:
+    path: "/nakama/data/modules"
+    jsEntrypoint: "index.js"
+    httpKey: "defaultkey"
+    luaPath: "/nakama/data/modules"
+  
+  socket:
+    serverKey: "defaultkey"
+    port: 7350
+    maxMessageSizeBytes: 4096
+    writeWaitMs: 5000
+    pongWaitMs: 25000
+    pingPeriodMs: 20000
+  
+  session:
+    encryptionKey: "defaultencryptionkey"
+    tokenExpirySec: 7200
+  
+  console:
+    port: 7351
+    username: "admin"
+    password: "password"
+  
+  logger:
+    level: "INFO"
+    stdout: true
+    file: "/nakama/logs/nakama.log"
+  
+  database:
+    address: "root@cockroachdb:26257"
+
+# Health check configuration
+healthCheck:
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  readiness:
+    initialDelaySeconds: 20
+    periodSeconds: 5
+    timeoutSeconds: 3
+    successThreshold: 1
+    failureThreshold: 3
+
+# Validation job configuration
+validation:
+  enabled: true
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 3600

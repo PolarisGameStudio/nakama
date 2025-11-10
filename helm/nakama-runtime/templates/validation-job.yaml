@@ -1,0 +1,64 @@
+{{- if .Values.validation.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "nakama-runtime.fullname" . }}-validation
+  labels:
+    {{- include "nakama-runtime.labels" . | nindent 4 }}
+    app.kubernetes.io/component: validation
+spec:
+  backoffLimit: {{ .Values.validation.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.validation.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "nakama-runtime.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: validation
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: rpc-validator
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          
+          echo "Waiting for Nakama service to be ready..."
+          sleep 30
+          
+          SERVICE_URL="http://{{ include "nakama-runtime.fullname" . }}:{{ .Values.service.httpPort }}"
+          
+          echo "Testing health_check RPC..."
+          RESPONSE=$(curl -s -X POST \
+            "$SERVICE_URL/v2/rpc/health_check" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          
+          echo "Response: $RESPONSE"
+          
+          if echo "$RESPONSE" | grep -q '"status":"ok"'; then
+            echo "✅ Health check RPC validation successful!"
+          else
+            echo "❌ Health check RPC validation failed!"
+            exit 1
+          fi
+          
+          echo "Testing create_all_leaderboards_persistent RPC..."
+          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            "$SERVICE_URL/v2/rpc/create_all_leaderboards_persistent" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          
+          echo "Status code: $STATUS_CODE"
+          
+          if [ "$STATUS_CODE" = "200" ] || [ "$STATUS_CODE" = "401" ]; then
+            echo "✅ create_all_leaderboards_persistent RPC is registered!"
+          else
+            echo "❌ create_all_leaderboards_persistent RPC not found! (Status: $STATUS_CODE)"
+            exit 1
+          fi
+          
+          echo "✅ All RPC validations passed!"
+{{- end }}

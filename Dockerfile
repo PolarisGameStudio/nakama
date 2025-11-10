@@ -53,14 +53,14 @@ RUN mkdir -p /nakama/config /nakama/data /nakama/logs /nakama/data/modules /naka
 # Copy Nakama binary
 COPY --from=builder /go/src/github.com/heroiclabs/nakama/nakama /nakama/nakama
 
-# Copy compiled JS modules from build stage
-COPY --from=modules /build/data/modules/build /nakama/data/modules
+# Copy compiled JS modules from build stage to /nakama/data/modules
+COPY --from=modules /build/data/modules/build/* /nakama/data/modules/
 
-# Copy Lua modules from source
-COPY data/modules /nakama/data/modules
+# Copy Lua modules from source to /nakama/data/modules
+COPY data/modules/*.lua /nakama/data/modules/
 
-# Copy config
-#COPY config.yaml /nakama/config/config.yaml
+# Copy nakama.yml configuration
+COPY nakama.yml /nakama/config.yml
 
 RUN addgroup -S nakama && adduser -S nakama -G nakama && chown -R nakama:nakama /nakama
 USER nakama
@@ -69,4 +69,4 @@ WORKDIR /nakama
 EXPOSE 7349 7350 7351
 
 ENTRYPOINT ["/nakama/nakama"]
-CMD ["--name", "nakama", "--config", "/nakama/config/config.yaml", "--logger.level", "info"]
+CMD ["--config", "/nakama/config.yml"]

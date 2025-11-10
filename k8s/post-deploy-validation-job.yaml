@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nakama-rpc-validation
+  namespace: default
+  labels:
+    app: nakama
+    job: validation
+spec:
+  # Number of retries before considering the job failed
+  backoffLimit: 5
+  # Clean up finished jobs after 1 hour
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: nakama
+        job: validation
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: rpc-validator
+        image: curlimages/curl:latest
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          
+          echo "Waiting for Nakama service to be ready..."
+          sleep 30
+          
+          echo "Testing health_check RPC..."
+          RESPONSE=$(curl -s -X POST \
+            "http://nakama-service:7350/v2/rpc/health_check" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          
+          echo "Response: $RESPONSE"
+          
+          # Check if response contains "ok"
+          if echo "$RESPONSE" | grep -q '"status":"ok"'; then
+            echo "✅ Health check RPC validation successful!"
+          else
+            echo "❌ Health check RPC validation failed!"
+            exit 1
+          fi
+          
+          echo "Testing create_all_leaderboards_persistent RPC..."
+          # Note: This RPC requires authentication in production
+          # For validation, we just check if the endpoint exists (will return auth error)
+          STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            "http://nakama-service:7350/v2/rpc/create_all_leaderboards_persistent" \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          
+          echo "Status code: $STATUS_CODE"
+          
+          # Status code 401 (unauthorized) or 200 means the RPC exists
+          # Status code 404 would mean RPC not found
+          if [ "$STATUS_CODE" = "200" ] || [ "$STATUS_CODE" = "401" ]; then
+            echo "✅ create_all_leaderboards_persistent RPC is registered!"
+          else
+            echo "❌ create_all_leaderboards_persistent RPC not found! (Status: $STATUS_CODE)"
+            exit 1
+          fi
+          
+          echo "✅ All RPC validations passed!"
