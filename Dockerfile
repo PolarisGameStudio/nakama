@@ -54,9 +54,10 @@ RUN mkdir -p /nakama/config /nakama/data /nakama/logs /nakama/data/modules /naka
 COPY --from=builder /go/src/github.com/heroiclabs/nakama/nakama /nakama/nakama
 
 # Copy compiled JS modules from build stage to /nakama/data/modules
-COPY --from=modules /build/data/modules/build/* /nakama/data/modules/
+COPY --from=modules /build/data/modules/build /nakama/data/modules
 
 # Copy Lua modules from source to /nakama/data/modules
+# Note: This will copy all files including .ts, but Nakama will only load .lua files
 COPY data/modules/*.lua /nakama/data/modules/
 
 # Copy nakama.yml configuration
