@@ -25,6 +25,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/heroiclabs/nakama-common/api"
@@ -45,7 +46,14 @@ type consoleAccountCursor struct {
 	Username string
 }
 
+type consoleAccountNotesCursor struct {
+	NoteID     uuid.UUID
+	UserID     uuid.UUID
+	CreateTime time.Time
+}
+
 func (s *ConsoleServer) BanAccount(ctx context.Context, in *console.AccountId) (*emptypb.Empty, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
@@ -54,7 +62,7 @@ func (s *ConsoleServer) BanAccount(ctx context.Context, in *console.AccountId) (
 		return nil, status.Error(codes.InvalidArgument, "Cannot ban the system user.")
 	}
 
-	if err := BanUsers(ctx, s.logger, s.db, s.config, s.sessionCache, s.sessionRegistry, s.tracker, []uuid.UUID{userID}); err != nil {
+	if err := BanUsers(ctx, logger, s.db, s.config, s.sessionCache, s.sessionRegistry, s.tracker, []uuid.UUID{userID}); err != nil {
 		// Error logged in the core function above.
 		return nil, status.Error(codes.Internal, "An error occurred while trying to ban the user.")
 	}
@@ -63,6 +71,7 @@ func (s *ConsoleServer) BanAccount(ctx context.Context, in *console.AccountId) (
 }
 
 func (s *ConsoleServer) UnbanAccount(ctx context.Context, in *console.AccountId) (*emptypb.Empty, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
@@ -71,7 +80,7 @@ func (s *ConsoleServer) UnbanAccount(ctx context.Context, in *console.AccountId)
 		return nil, status.Error(codes.InvalidArgument, "Cannot unban the system user.")
 	}
 
-	if err := UnbanUsers(ctx, s.logger, s.db, s.sessionCache, []uuid.UUID{userID}); err != nil {
+	if err := UnbanUsers(ctx, logger, s.db, s.sessionCache, []uuid.UUID{userID}); err != nil {
 		// Error logged in the core function above.
 		return nil, status.Error(codes.Internal, "An error occurred while trying to unban the user.")
 	}
@@ -80,12 +89,13 @@ func (s *ConsoleServer) UnbanAccount(ctx context.Context, in *console.AccountId)
 }
 
 func (s *ConsoleServer) DeleteAccount(ctx context.Context, in *console.AccountDeleteRequest) (*emptypb.Empty, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
 	}
 
-	if err = DeleteAccount(ctx, s.logger, s.db, s.config, s.leaderboardCache, s.leaderboardRankCache, s.sessionRegistry, s.sessionCache, s.tracker, userID, in.RecordDeletion != nil && in.RecordDeletion.Value); err != nil {
+	if err = DeleteAccount(ctx, logger, s.db, s.config, s.leaderboardCache, s.leaderboardRankCache, s.sessionRegistry, s.sessionCache, s.tracker, userID, in.RecordDeletion != nil && in.RecordDeletion.Value); err != nil {
 		// Error already logged in function above.
 		return nil, status.Error(codes.Internal, "An error occurred while trying to delete the user.")
 	}
@@ -96,15 +106,17 @@ func (s *ConsoleServer) DeleteAccount(ctx context.Context, in *console.AccountDe
 // Deprecated: replaced by DeleteAllData
 func (s *ConsoleServer) DeleteAccounts(ctx context.Context, in *emptypb.Empty) (*emptypb.Empty, error) {
 	// Delete all but the system user. Related data will be removed by cascading constraints.
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	_, err := s.db.ExecContext(ctx, "DELETE FROM users WHERE id <> '00000000-0000-0000-0000-000000000000'")
 	if err != nil {
-		s.logger.Error("Error deleting all user accounts.", zap.Error(err))
+		logger.Error("Error deleting all user accounts.", zap.Error(err))
 		return nil, status.Error(codes.Internal, "An error occurred while trying to delete all users.")
 	}
 	return &emptypb.Empty{}, nil
 }
 
 func (s *ConsoleServer) DeleteFriend(ctx context.Context, in *console.DeleteFriendRequest) (*emptypb.Empty, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
@@ -113,7 +125,7 @@ func (s *ConsoleServer) DeleteFriend(ctx context.Context, in *console.DeleteFrie
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid friend ID.")
 	}
 
-	users, err := GetUsers(ctx, s.logger, s.db, s.statusRegistry, []string{in.Id}, nil, nil)
+	users, err := GetUsers(ctx, logger, s.db, s.statusRegistry, []string{in.Id}, nil, nil)
 	if err != nil {
 		return nil, status.Error(codes.Internal, "An error occurred while trying to read user.")
 	}
@@ -122,7 +134,7 @@ func (s *ConsoleServer) DeleteFriend(ctx context.Context, in *console.DeleteFrie
 		return &emptypb.Empty{}, nil
 	}
 
-	if err = DeleteFriends(ctx, s.logger, s.db, s.tracker, s.router, userID, users.Users[0].Username, []string{in.FriendId}); err != nil {
+	if err = DeleteFriends(ctx, logger, s.db, s.tracker, s.router, userID, users.Users[0].Username, []string{in.FriendId}); err != nil {
 		// Error already logged in the function above.
 		return nil, status.Error(codes.Internal, "An error occurred while trying to delete the friend relationship.")
 	}
@@ -131,6 +143,7 @@ func (s *ConsoleServer) DeleteFriend(ctx context.Context, in *console.DeleteFrie
 }
 
 func (s *ConsoleServer) DeleteGroupUser(ctx context.Context, in *console.DeleteGroupUserRequest) (*emptypb.Empty, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
@@ -140,7 +153,7 @@ func (s *ConsoleServer) DeleteGroupUser(ctx context.Context, in *console.DeleteG
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid group ID.")
 	}
 
-	if err = KickGroupUsers(ctx, s.logger, s.db, s.tracker, s.router, s.streamManager, uuid.Nil, groupID, []uuid.UUID{userID}, true); err != nil {
+	if err = KickGroupUsers(ctx, logger, s.db, s.tracker, s.router, s.streamManager, uuid.Nil, groupID, []uuid.UUID{userID}, true); err != nil {
 		// Error already logged in the function above.
 		if errors.Is(err, ErrEmptyMemberKick) {
 			return nil, status.Error(codes.FailedPrecondition, "Cannot kick user from group.")
@@ -152,6 +165,7 @@ func (s *ConsoleServer) DeleteGroupUser(ctx context.Context, in *console.DeleteG
 }
 
 func (s *ConsoleServer) DeleteWalletLedger(ctx context.Context, in *console.DeleteWalletLedgerRequest) (*emptypb.Empty, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
@@ -163,7 +177,7 @@ func (s *ConsoleServer) DeleteWalletLedger(ctx context.Context, in *console.Dele
 
 	_, err = s.db.ExecContext(ctx, "DELETE FROM wallet_ledger WHERE id = $1 AND user_id = $2", walletID, userID)
 	if err != nil {
-		s.logger.Error("Error deleting from wallet ledger.", zap.String("id", walletID.String()), zap.String("user_id", userID.String()), zap.Error(err))
+		logger.Error("Error deleting from wallet ledger.", zap.String("id", walletID.String()), zap.String("user_id", userID.String()), zap.Error(err))
 		return nil, status.Error(codes.Internal, "An error occurred while trying to remove the user's wallet ledger item.")
 	}
 
@@ -171,6 +185,7 @@ func (s *ConsoleServer) DeleteWalletLedger(ctx context.Context, in *console.Dele
 }
 
 func (s *ConsoleServer) ExportAccount(ctx context.Context, in *console.AccountId) (*console.AccountExport, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
@@ -179,20 +194,48 @@ func (s *ConsoleServer) ExportAccount(ctx context.Context, in *console.AccountId
 		return nil, status.Error(codes.InvalidArgument, "Cannot export the system user.")
 	}
 
-	export, err := ExportAccount(ctx, s.logger, s.db, userID)
+	export, err := ExportAccount(ctx, logger, s.db, userID)
 	if err != nil {
 		return nil, err
 	}
 	return export, nil
 }
 
+func (s *ConsoleServer) ImportAccount(ctx context.Context, in *console.AccountImport) (*emptypb.Empty, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
+	userID, err := uuid.FromString(in.Id)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
+	}
+	if userID == uuid.Nil {
+		return nil, status.Error(codes.InvalidArgument, "Cannot import to the system user.")
+	}
+
+	if _, err := ImportAccount(ctx, logger, s.db, s.statusRegistry, userID, in.Data); err != nil {
+		return nil, err
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+func (s *ConsoleServer) ImportAccountFull(ctx context.Context, in *console.AccountImport) (*console.Account, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
+	account, err := ImportAccount(ctx, logger, s.db, s.statusRegistry, uuid.Nil, in.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	return account, nil
+}
+
 func (s *ConsoleServer) GetAccount(ctx context.Context, in *console.AccountId) (*console.Account, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
 	}
 
-	account, err := GetAccount(ctx, s.logger, s.db, s.statusRegistry, userID)
+	account, err := GetAccount(ctx, logger, s.db, s.statusRegistry, userID)
 	if err != nil {
 		// Error already logged in function above.
 		if errors.Is(err, ErrAccountNotFound) {
@@ -208,12 +251,13 @@ func (s *ConsoleServer) GetAccount(ctx context.Context, in *console.AccountId) (
 }
 
 func (s *ConsoleServer) GetFriends(ctx context.Context, in *console.AccountId) (*api.FriendList, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
 	}
 
-	friends, err := ListFriends(ctx, s.logger, s.db, s.statusRegistry, userID, 0, nil, "")
+	friends, err := ListFriends(ctx, logger, s.db, s.statusRegistry, userID, 0, nil, "")
 	if err != nil {
 		// Error already logged in function above.
 		return nil, status.Error(codes.Internal, "An error occurred while trying to list the user's friends.")
@@ -223,12 +267,13 @@ func (s *ConsoleServer) GetFriends(ctx context.Context, in *console.AccountId) (
 }
 
 func (s *ConsoleServer) GetGroups(ctx context.Context, in *console.AccountId) (*api.UserGroupList, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
 	}
 
-	groups, err := ListUserGroups(ctx, s.logger, s.db, userID, 0, nil, "")
+	groups, err := ListUserGroups(ctx, logger, s.db, userID, 0, nil, "")
 	if err != nil {
 		// Error already logged in function above.
 		return nil, status.Error(codes.Internal, "An error occurred while trying to list the user's groups.")
@@ -238,6 +283,7 @@ func (s *ConsoleServer) GetGroups(ctx context.Context, in *console.AccountId) (*
 }
 
 func (s *ConsoleServer) GetWalletLedger(ctx context.Context, in *console.GetWalletLedgerRequest) (*console.WalletLedgerList, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.AccountId)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
@@ -248,7 +294,16 @@ func (s *ConsoleServer) GetWalletLedger(ctx context.Context, in *console.GetWall
 		return nil, status.Error(codes.InvalidArgument, "expects a limit value between 1 and 100")
 	}
 
-	ledger, nextCursorStr, prevCursorStr, err := ListWalletLedger(ctx, s.logger, s.db, userID, &limit, in.Cursor)
+	var after time.Time
+	if in.After != nil {
+		after = in.After.AsTime()
+	}
+	var before time.Time
+	if in.Before != nil {
+		before = in.Before.AsTime()
+	}
+
+	ledger, nextCursorStr, prevCursorStr, err := ListWalletLedger(ctx, logger, s.db, userID, &limit, in.Cursor, after, before)
 	if err != nil {
 		// Error already logged in function above.
 		return nil, status.Error(codes.Internal, "An error occurred while trying to list the user's wallet ledger.")
@@ -259,12 +314,12 @@ func (s *ConsoleServer) GetWalletLedger(ctx context.Context, in *console.GetWall
 	for _, ledgerItem := range ledger {
 		changeset, err := json.Marshal(ledgerItem.Changeset)
 		if err != nil {
-			s.logger.Error("Error encoding wallet ledger changeset.", zap.Error(err))
+			logger.Error("Error encoding wallet ledger changeset.", zap.Error(err))
 			return nil, status.Error(codes.Internal, "An error occurred while trying to list the user's wallet ledger.")
 		}
 		metadata, err := json.Marshal(ledgerItem.Metadata)
 		if err != nil {
-			s.logger.Error("Error encoding wallet ledger metadata.", zap.Error(err))
+			logger.Error("Error encoding wallet ledger metadata.", zap.Error(err))
 			return nil, status.Error(codes.Internal, "An error occurred while trying to list the user's wallet ledger.")
 		}
 		consoleLedger = append(consoleLedger, &console.WalletLedger{
@@ -281,6 +336,7 @@ func (s *ConsoleServer) GetWalletLedger(ctx context.Context, in *console.GetWall
 }
 
 func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccountsRequest) (*console.AccountList, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	const defaultLimit = 50
 
 	// Searching only through tombstone records.
@@ -307,7 +363,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 						TotalCount: 0,
 					}, nil
 				}
-				s.logger.Error("Error looking up user tombstone.", zap.Any("in", in), zap.Error(err))
+				logger.Error("Error looking up user tombstone.", zap.Any("in", in), zap.Error(err))
 				return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 			}
 
@@ -325,7 +381,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 		query := "SELECT user_id, create_time FROM user_tombstone LIMIT $1"
 		rows, err := s.db.QueryContext(ctx, query, defaultLimit)
 		if err != nil {
-			s.logger.Error("Error querying user tombstones.", zap.Any("in", in), zap.Error(err))
+			logger.Error("Error querying user tombstones.", zap.Any("in", in), zap.Error(err))
 			return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 		}
 
@@ -336,7 +392,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 			var createTime pgtype.Timestamptz
 			if err = rows.Scan(&id, &createTime); err != nil {
 				_ = rows.Close()
-				s.logger.Error("Error scanning user tombstones.", zap.Any("in", in), zap.Error(err))
+				logger.Error("Error scanning user tombstones.", zap.Any("in", in), zap.Error(err))
 				return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 			}
 
@@ -349,7 +405,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 
 		return &console.AccountList{
 			Users:      users,
-			TotalCount: countDatabase(ctx, s.logger, s.db, "user_tombstone"),
+			TotalCount: countDatabase(ctx, logger, s.db, "user_tombstone"),
 		}, nil
 	}
 
@@ -359,12 +415,12 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 	if in.Filter == "" && in.Cursor != "" {
 		cb, err := base64.RawURLEncoding.DecodeString(in.Cursor)
 		if err != nil {
-			s.logger.Error("Error decoding account list cursor.", zap.String("cursor", in.Cursor), zap.Error(err))
+			logger.Error("Error decoding account list cursor.", zap.String("cursor", in.Cursor), zap.Error(err))
 			return nil, status.Error(codes.Internal, "An error occurred while trying to decode account list request cursor.")
 		}
 		cursor = &consoleAccountCursor{}
 		if err := gob.NewDecoder(bytes.NewReader(cb)).Decode(&cursor); err != nil {
-			s.logger.Error("Error decoding account list cursor.", zap.String("cursor", in.Cursor), zap.Error(err))
+			logger.Error("Error decoding account list cursor.", zap.String("cursor", in.Cursor), zap.Error(err))
 			return nil, status.Error(codes.Internal, "An error occurred while trying to decode account list request cursor.")
 		}
 	}
@@ -414,7 +470,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 
 		rows, err := s.db.QueryContext(ctx, query, params...)
 		if err != nil {
-			s.logger.Error("Error querying users.", zap.Any("in", in), zap.Error(err))
+			logger.Error("Error querying users.", zap.Any("in", in), zap.Error(err))
 			return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 		}
 
@@ -422,7 +478,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 			user, err := convertUser(rows)
 			if err != nil {
 				_ = rows.Close()
-				s.logger.Error("Error scanning users.", zap.Any("in", in), zap.Error(err))
+				logger.Error("Error scanning users.", zap.Any("in", in), zap.Error(err))
 				return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 			}
 			users = append(users, user)
@@ -441,7 +497,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 
 			rows, err := s.db.QueryContext(ctx, query, params...)
 			if err != nil {
-				s.logger.Error("Error querying users.", zap.Any("in", in), zap.Error(err))
+				logger.Error("Error querying users.", zap.Any("in", in), zap.Error(err))
 				return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 			}
 
@@ -449,7 +505,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 				user, err := convertUser(rows)
 				if err != nil {
 					_ = rows.Close()
-					s.logger.Error("Error scanning users.", zap.Any("in", in), zap.Error(err))
+					logger.Error("Error scanning users.", zap.Any("in", in), zap.Error(err))
 					return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 				}
 				users = append(users, user)
@@ -472,7 +528,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 
 		return &console.AccountList{
 			Users:      users,
-			TotalCount: countDatabase(ctx, s.logger, s.db, "users"),
+			TotalCount: countDatabase(ctx, logger, s.db, "users"),
 		}, nil
 	}
 
@@ -493,7 +549,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 
 	rows, err := s.db.QueryContext(ctx, query, params...)
 	if err != nil {
-		s.logger.Error("Error querying users.", zap.Any("in", in), zap.Error(err))
+		logger.Error("Error querying users.", zap.Any("in", in), zap.Error(err))
 		return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 	}
 
@@ -514,7 +570,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 		user, err := convertUser(rows)
 		if err != nil {
 			_ = rows.Close()
-			s.logger.Error("Error scanning users.", zap.Any("in", in), zap.Error(err))
+			logger.Error("Error scanning users.", zap.Any("in", in), zap.Error(err))
 			return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 		}
 		users = append(users, user)
@@ -526,13 +582,13 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 
 	response := &console.AccountList{
 		Users:      users,
-		TotalCount: countDatabase(ctx, s.logger, s.db, "users"),
+		TotalCount: countDatabase(ctx, logger, s.db, "users"),
 	}
 
 	if nextCursor != nil {
 		cursorBuf := &bytes.Buffer{}
 		if err := gob.NewEncoder(cursorBuf).Encode(nextCursor); err != nil {
-			s.logger.Error("Error encoding users cursor.", zap.Any("in", in), zap.Error(err))
+			logger.Error("Error encoding users cursor.", zap.Any("in", in), zap.Error(err))
 			return nil, status.Error(codes.Internal, "An error occurred while trying to list users.")
 		}
 		response.NextCursor = base64.RawURLEncoding.EncodeToString(cursorBuf.Bytes())
@@ -542,6 +598,7 @@ func (s *ConsoleServer) ListAccounts(ctx context.Context, in *console.ListAccoun
 }
 
 func (s *ConsoleServer) UpdateAccount(ctx context.Context, in *console.UpdateAccountRequest) (*emptypb.Empty, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	userID, err := uuid.FromString(in.Id)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
@@ -659,7 +716,7 @@ func (s *ConsoleServer) UpdateAccount(ctx context.Context, in *console.UpdateAcc
 		}
 		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(p), bcrypt.DefaultCost)
 		if err != nil {
-			s.logger.Error("Error hashing password.", zap.Error(err))
+			logger.Error("Error hashing password.", zap.Error(err))
 			return nil, status.Error(codes.Internal, "Error updating user account password.")
 		}
 		newPassword = hashedPassword
@@ -718,7 +775,7 @@ AND (EXISTS (SELECT id FROM users WHERE id = $1 AND
 
 				res, err := tx.ExecContext(ctx, query, userID, oldDeviceID)
 				if err != nil {
-					s.logger.Error("Could not unlink device ID.", zap.Error(err), zap.Any("input", in))
+					logger.Error("Could not unlink device ID.", zap.Error(err), zap.Any("input", in))
 					return err
 				}
 				if count, _ := res.RowsAffected(); count == 0 {
@@ -728,7 +785,7 @@ AND (EXISTS (SELECT id FROM users WHERE id = $1 AND
 				query := `UPDATE user_device SET id = $1 WHERE id = $2 AND user_id = $3`
 				res, err := tx.ExecContext(ctx, query, newDeviceID, oldDeviceID, userID)
 				if err != nil {
-					s.logger.Error("Could not update device ID.", zap.Error(err), zap.Any("input", in))
+					logger.Error("Could not update device ID.", zap.Error(err), zap.Any("input", in))
 					return err
 				}
 				if count, _ := res.RowsAffected(); count == 0 {
@@ -741,7 +798,7 @@ AND (EXISTS (SELECT id FROM users WHERE id = $1 AND
 			query := "UPDATE users SET update_time = now(), " + strings.Join(statements, ", ") + " WHERE id = $1"
 			_, err := tx.ExecContext(ctx, query, params...)
 			if err != nil {
-				s.logger.Error("Could not update user account.", zap.Error(err), zap.Any("input", in))
+				logger.Error("Could not update user account.", zap.Error(err), zap.Any("input", in))
 				return err
 			}
 		}
@@ -805,7 +862,7 @@ AND ((facebook_id IS NOT NULL
 			// Update the password on the user account only if they have an email associated.
 			res, err := tx.ExecContext(ctx, "UPDATE users SET password = $2, update_time = now() WHERE id = $1 AND email IS NOT NULL", userID, newPassword)
 			if err != nil {
-				s.logger.Error("Could not update password.", zap.Error(err), zap.Any("user_id", userID))
+				logger.Error("Could not update password.", zap.Error(err), zap.Any("user_id", userID))
 				return err
 			}
 			if rowsAffected, _ := res.RowsAffected(); rowsAffected != 1 {
@@ -817,7 +874,7 @@ AND ((facebook_id IS NOT NULL
 			// Ensure the user account update time is touched if the device IDs have changed but no other updates were applied to the core user record.
 			_, err := tx.ExecContext(ctx, "UPDATE users SET update_time = now() WHERE id = $1", userID)
 			if err != nil {
-				s.logger.Error("Could not unlink device ID.", zap.Error(err), zap.Any("input", in))
+				logger.Error("Could not unlink device ID.", zap.Error(err), zap.Any("input", in))
 				return err
 			}
 		}
@@ -829,8 +886,186 @@ AND ((facebook_id IS NOT NULL
 			// Errors such as unlinking the last profile or username in use.
 			return nil, se.Status()
 		}
-		s.logger.Error("Error updating user.", zap.Error(err))
+		logger.Error("Error updating user.", zap.Error(err))
 		return nil, status.Error(codes.Internal, "An error occurred while trying to update the user.")
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+func (s *ConsoleServer) AddAccountNote(ctx context.Context, in *console.AddAccountNoteRequest) (*console.AccountNote, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
+	consoleUserID, ok := ctx.Value(ctxConsoleUserIdKey{}).(uuid.UUID)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "Console user identifier not found in request context.")
+	}
+	consoleUsername, ok := ctx.Value(ctxConsoleUsernameKey{}).(string)
+	if !ok {
+		return nil, status.Error(codes.FailedPrecondition, "Console username not found in request context.")
+	}
+
+	userID, err := uuid.FromString(in.AccountId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
+	}
+	if in.Note == "" {
+		return nil, status.Error(codes.InvalidArgument, "Note cannot be empty.")
+	}
+
+	if in.Id == "" {
+		// Create new note.
+		in.Id = uuid.Must(uuid.NewV4()).String()
+	}
+
+	query := `
+WITH cte AS (
+  INSERT INTO users_notes (user_id, id, note, create_id, update_id)
+  VALUES ($1, $2, $3, $4, $4)
+  ON CONFLICT (id)
+  DO UPDATE SET note = $3, update_time = now(), update_id = $4
+  RETURNING create_time, update_time, create_id
+)
+SELECT c.create_time, c.update_time, c.create_id, cu.username
+FROM cte AS c
+LEFT JOIN console_user AS cu ON c.create_id = cu.id
+`
+	var createTime, updateTime pgtype.Timestamptz
+	var createId, createUsername sql.NullString
+	if err := s.db.QueryRowContext(ctx, query, userID, in.Id, in.Note, consoleUserID).Scan(&createTime, &updateTime, &createId, &createUsername); err != nil {
+		logger.Error("Could not add or update user note.", zap.Error(err))
+		return nil, status.Error(codes.Internal, "An error occurred while trying to add or update user note.")
+	}
+
+	note := &console.AccountNote{
+		Id:             in.Id,
+		UserId:         in.AccountId,
+		Note:           in.Note,
+		CreateTime:     timestamppb.New(createTime.Time),
+		UpdateTime:     timestamppb.New(updateTime.Time),
+		UpdateUsername: consoleUsername,
+	}
+	if createUsername.Valid {
+		note.CreateUsername = createUsername.String
+	}
+	if createId.Valid {
+		note.CreateId = createId.String
+	}
+	if consoleUserID != uuid.Nil {
+		note.UpdateId = consoleUserID.String()
+	}
+
+	return note, nil
+}
+
+func (s *ConsoleServer) ListAccountNotes(ctx context.Context, in *console.ListAccountNotesRequest) (*console.ListAccountNotesResponse, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
+	userID, err := uuid.FromString(in.AccountId)
+	if err != nil {
+		return nil, status.Error(codes.InvalidArgument, "Requires a valid user ID.")
+	}
+
+	if in.Limit < 1 || in.Limit > 100 {
+		in.Limit = 10
+	}
+
+	var cursor *consoleAccountNotesCursor
+	if in.Cursor != "" {
+		cb, err := base64.RawURLEncoding.DecodeString(in.Cursor)
+		if err != nil {
+			logger.Error("Error decoding user account notes list cursor.", zap.String("cursor", in.Cursor), zap.Error(err))
+			return nil, status.Error(codes.Internal, "An error occurred while trying to decode user notes list request cursor.")
+		}
+		cursor = &consoleAccountNotesCursor{}
+		if err := gob.NewDecoder(bytes.NewReader(cb)).Decode(&cursor); err != nil {
+			logger.Error("Error decoding user account notes list cursor.", zap.String("cursor", in.Cursor), zap.Error(err))
+			return nil, status.Error(codes.Internal, "An error occurred while trying to decode user notes list request cursor.")
+		}
+
+		if cursor.UserID != userID {
+			logger.Error("User identifier mismatch in user account notes list cursor.", zap.String("cursor", in.Cursor))
+			return nil, status.Error(codes.InvalidArgument, "Cursor user identifier mismatch.")
+		}
+	}
+
+	query := `
+SELECT un.id, un.note, un.create_time, un.update_time, un.create_id, cuc.username, un.update_id, cuu.username
+FROM users_notes AS un
+LEFT JOIN console_user AS cuc ON un.create_id = cuc.id
+LEFT JOIN console_user AS cuu ON un.update_id = cuu.id
+WHERE user_id = $1`
+	params := []interface{}{userID, in.Limit + 1}
+	if cursor != nil {
+		query += " AND (un.user_id, un.create_time, un.id) <= ($1, $3, $4)"
+		params = append(params, cursor.CreateTime, cursor.NoteID)
+	}
+	query += " ORDER BY un.create_time DESC, un.id DESC LIMIT $2"
+
+	rows, err := s.db.QueryContext(ctx, query, params...)
+	if err != nil {
+		logger.Error("Error querying user account notes.", zap.Error(err))
+		return nil, status.Error(codes.Internal, "An error occurred while trying to list user notes.")
+	}
+	defer rows.Close()
+
+	var newCursor *consoleAccountNotesCursor
+	notes := make([]*console.AccountNote, 0, in.Limit)
+	for rows.Next() {
+		note := &console.AccountNote{}
+		var createTime, updateTime pgtype.Timestamptz
+		var createId, updateId, createUsername, updateUsername sql.NullString
+		if err := rows.Scan(&note.Id, &note.Note, &createTime, &updateTime, &createId, &createUsername, &updateId, &updateUsername); err != nil {
+			_ = rows.Close()
+			logger.Error("Error scanning user account notes.", zap.Error(err))
+			return nil, status.Error(codes.Internal, "An error occurred while trying to list user notes.")
+		}
+
+		if len(notes) >= int(in.Limit) {
+			newCursor = &consoleAccountNotesCursor{
+				NoteID:     uuid.FromStringOrNil(note.Id),
+				UserID:     userID,
+				CreateTime: createTime.Time,
+			}
+			break
+		}
+
+		note.UserId = in.AccountId
+		note.CreateTime = timestamppb.New(createTime.Time)
+		note.UpdateTime = timestamppb.New(updateTime.Time)
+		if createId.Valid {
+			note.CreateId = createId.String
+		}
+		if createUsername.Valid {
+			note.CreateUsername = createUsername.String
+		}
+		if updateId.Valid {
+			note.UpdateId = updateId.String
+		}
+		if updateUsername.Valid {
+			note.UpdateUsername = updateUsername.String
+		}
+		notes = append(notes, note)
+	}
+	_ = rows.Close()
+
+	response := &console.ListAccountNotesResponse{Notes: notes}
+
+	if newCursor != nil {
+		cursorBuf := &bytes.Buffer{}
+		if err := gob.NewEncoder(cursorBuf).Encode(newCursor); err != nil {
+			logger.Error("Error encoding account notes cursor.", zap.Any("in", in), zap.Error(err))
+			return nil, status.Error(codes.Internal, "An error occurred while trying to list account notes.")
+		}
+		response.Cursor = base64.RawURLEncoding.EncodeToString(cursorBuf.Bytes())
+	}
+
+	return response, nil
+}
+
+func (s *ConsoleServer) DeleteAccountNote(ctx context.Context, in *console.DeleteAccountNoteRequest) (*emptypb.Empty, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM users_notes WHERE id = $1", in.NoteId); err != nil {
+		logger.Error("Could not delete note.", zap.Error(err))
+		return nil, status.Error(codes.Internal, "An error occurred while trying to delete the user note.")
 	}
 
 	return &emptypb.Empty{}, nil

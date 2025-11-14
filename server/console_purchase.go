@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"time"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/heroiclabs/nakama-common/api"
@@ -26,6 +27,21 @@ import (
 )
 
 func (s *ConsoleServer) ListPurchases(ctx context.Context, in *console.ListPurchasesRequest) (*api.PurchaseList, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
+	if in.Filter != "" {
+		purchase, err := GetPurchaseByTransactionId(ctx, logger, s.db, in.Filter)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "Error listing purchases.")
+		}
+		response := &api.PurchaseList{
+			ValidatedPurchases: make([]*api.ValidatedPurchase, 0, 1),
+		}
+		if purchase != nil {
+			response.ValidatedPurchases = append(response.ValidatedPurchases, purchase)
+		}
+		return response, nil
+	}
+
 	if in.UserId != "" {
 		_, err := uuid.FromString(in.UserId)
 		if err != nil {
@@ -37,9 +53,18 @@ func (s *ConsoleServer) ListPurchases(ctx context.Context, in *console.ListPurch
 		return nil, status.Error(codes.InvalidArgument, "expects a limit value between 1 and 100")
 	}
 
-	purchases, err := ListPurchases(ctx, s.logger, s.db, in.UserId, int(in.Limit), in.Cursor)
+	var after time.Time
+	if in.After != nil {
+		after = in.After.AsTime()
+	}
+	var before time.Time
+	if in.Before != nil {
+		before = in.Before.AsTime()
+	}
+
+	purchases, err := ListPurchases(ctx, logger, s.db, in.UserId, int(in.Limit), in.Cursor, after, before)
 	if err != nil {
-		s.logger.Error("Failed to list purchases", zap.Error(err))
+		logger.Error("Failed to list purchases", zap.Error(err))
 		return nil, status.Error(codes.Internal, "Error listing purchases.")
 	}
 
@@ -47,11 +72,12 @@ func (s *ConsoleServer) ListPurchases(ctx context.Context, in *console.ListPurch
 }
 
 func (s *ConsoleServer) GetPurchase(ctx context.Context, in *console.GetPurchaseRequest) (*api.ValidatedPurchase, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	if in.GetTransactionId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "transaction id is required")
 	}
 
-	purchase, err := GetPurchaseByTransactionId(ctx, s.logger, s.db, in.TransactionId)
+	purchase, err := GetPurchaseByTransactionId(ctx, logger, s.db, in.TransactionId)
 	if err != nil || purchase == nil {
 		return nil, status.Error(codes.NotFound, "Purchase not found")
 	}

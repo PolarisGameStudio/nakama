@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"time"
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/heroiclabs/nakama-common/api"
@@ -26,6 +27,21 @@ import (
 )
 
 func (s *ConsoleServer) ListSubscriptions(ctx context.Context, in *console.ListSubscriptionsRequest) (*api.SubscriptionList, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
+	if in.Filter != "" {
+		subscription, err := getSubscriptionByOriginalTransactionId(ctx, logger, s.db, in.Filter)
+		if err != nil {
+			return nil, status.Error(codes.Internal, "Error listing purchases.")
+		}
+		response := &api.SubscriptionList{
+			ValidatedSubscriptions: make([]*api.ValidatedSubscription, 0, 1),
+		}
+		if subscription != nil {
+			response.ValidatedSubscriptions = append(response.ValidatedSubscriptions, subscription)
+		}
+		return response, nil
+	}
+
 	if in.UserId != "" {
 		_, err := uuid.FromString(in.UserId)
 		if err != nil {
@@ -37,9 +53,18 @@ func (s *ConsoleServer) ListSubscriptions(ctx context.Context, in *console.ListS
 		return nil, status.Error(codes.InvalidArgument, "expects a limit value between 1 and 100")
 	}
 
-	subscriptions, err := ListSubscriptions(ctx, s.logger, s.db, in.UserId, int(in.Limit), in.Cursor)
+	var after time.Time
+	if in.After != nil {
+		after = in.After.AsTime()
+	}
+	var before time.Time
+	if in.Before != nil {
+		before = in.Before.AsTime()
+	}
+
+	subscriptions, err := ListSubscriptions(ctx, logger, s.db, in.UserId, int(in.Limit), in.Cursor, after, before)
 	if err != nil {
-		s.logger.Error("Failed to list subscriptions", zap.Error(err))
+		logger.Error("Failed to list subscriptions", zap.Error(err))
 		return nil, status.Error(codes.Internal, "Error listing purchases.")
 	}
 
@@ -47,11 +72,12 @@ func (s *ConsoleServer) ListSubscriptions(ctx context.Context, in *console.ListS
 }
 
 func (s *ConsoleServer) GetSubscription(ctx context.Context, in *console.GetSubscriptionRequest) (*api.ValidatedSubscription, error) {
+	logger, _ := LoggerWithTraceId(ctx, s.logger)
 	if in.GetOriginalTransactionId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "original transaction id is required")
 	}
 
-	subscription, err := getSubscriptionByOriginalTransactionId(ctx, s.logger, s.db, in.GetOriginalTransactionId())
+	subscription, err := getSubscriptionByOriginalTransactionId(ctx, logger, s.db, in.GetOriginalTransactionId())
 	if err != nil || subscription == nil {
 		return nil, status.Error(codes.NotFound, "subscription not found")
 	}

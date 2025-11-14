@@ -33,11 +33,15 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/heroiclabs/nakama-common/runtime"
+	"github.com/heroiclabs/nakama/v3/console"
 	"github.com/heroiclabs/nakama/v3/internal/ctxkeys"
 	"go.uber.org/zap"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
-var _ runtime.Satori = &SatoriClient{}
+const satoriCacheTTL = 5 * time.Second
+
+var _ runtime.Satori = (*SatoriClient)(nil)
 
 type SatoriClient struct {
 	logger               *zap.Logger
@@ -46,22 +50,22 @@ type SatoriClient struct {
 	urlString            string
 	apiKeyName           string
 	apiKey               string
+	serverKey            string
 	signingKey           string
 	tokenExpirySec       int
 	nakamaTokenExpirySec int64
 	invalidConfig        bool
-	strictContextModes   map[string]bool
 
 	cacheEnabled         bool
 	propertiesCacheMutex sync.RWMutex
 	propertiesCache      map[context.Context]*runtime.Properties
 	flagsCache           *satoriCache[flagCacheEntry]
-	flagsOverridesCache  *satoriCache[[]flagOverridesCacheEntry]
+	flagsOverridesCache  *satoriCache[flagOverridesCacheEntry]
 	liveEventsCache      *satoriCache[*runtime.LiveEvent]
 	experimentsCache     *satoriCache[*runtime.Experiment]
 }
 
-func NewSatoriClient(ctx context.Context, logger *zap.Logger, satoriUrl, apiKeyName, apiKey, signingKey string, nakamaTokenExpirySec int64, cacheEnabled bool, strictContextModes []string) *SatoriClient {
+func NewSatoriClient(ctx context.Context, logger *zap.Logger, satoriUrl, apiKeyName, apiKey, serverKey, signingKey string, nakamaTokenExpirySec, httpTimeoutSec int64, cacheEnabled bool) *SatoriClient {
 	// NOTE: If the cache is enabled, any calls done within InitModule will remain cached for the lifetime of
 	// the server.
 	parsedUrl, _ := url.Parse(satoriUrl)
@@ -69,20 +73,20 @@ func NewSatoriClient(ctx context.Context, logger *zap.Logger, satoriUrl, apiKeyN
 	sc := &SatoriClient{
 		logger:               logger,
 		urlString:            satoriUrl,
-		httpc:                &http.Client{Timeout: 2 * time.Second},
+		httpc:                &http.Client{Timeout: time.Duration(httpTimeoutSec) * time.Second},
 		url:                  parsedUrl,
 		apiKeyName:           strings.TrimSpace(apiKeyName),
 		apiKey:               strings.TrimSpace(apiKey),
+		serverKey:            strings.TrimSpace(serverKey),
 		signingKey:           strings.TrimSpace(signingKey),
 		tokenExpirySec:       3600,
 		nakamaTokenExpirySec: nakamaTokenExpirySec,
-		strictContextModes:   make(map[string]bool, len(strictContextModes)),
 
 		cacheEnabled:         cacheEnabled,
 		propertiesCacheMutex: sync.RWMutex{},
 		propertiesCache:      make(map[context.Context]*runtime.Properties),
 		flagsCache:           newSatoriCache[flagCacheEntry](ctx, cacheEnabled),
-		flagsOverridesCache:  newSatoriCache[[]flagOverridesCacheEntry](ctx, cacheEnabled),
+		flagsOverridesCache:  newSatoriCache[flagOverridesCacheEntry](ctx, cacheEnabled),
 		liveEventsCache:      newSatoriCache[*runtime.LiveEvent](ctx, cacheEnabled),
 		experimentsCache:     newSatoriCache[*runtime.Experiment](ctx, cacheEnabled),
 	}
@@ -94,8 +98,25 @@ func NewSatoriClient(ctx context.Context, logger *zap.Logger, satoriUrl, apiKeyN
 		logger.Warn(err.Error())
 	}
 
-	for _, strictContextMode := range strictContextModes {
-		sc.strictContextModes[strictContextMode] = true
+	if cacheEnabled {
+		go func() {
+			ticker := time.NewTicker(satoriCacheTTL)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					sc.propertiesCacheMutex.Lock()
+					for cacheCtx := range sc.propertiesCache {
+						if cacheCtx.Err() != nil {
+							delete(sc.propertiesCache, cacheCtx)
+						}
+					}
+					sc.propertiesCacheMutex.Unlock()
+				}
+			}
+		}()
 	}
 
 	return sc
@@ -224,7 +245,7 @@ func (s *SatoriClient) Authenticate(ctx context.Context, id string, defaultPrope
 		return nil, runtime.ErrSatoriConfigurationInvalid
 	}
 
-	url := s.url.String() + "/v1/authenticate"
+	url := s.url.JoinPath("/v1/authenticate").String()
 
 	body := &authenticateBody{
 		Id:        id,
@@ -296,16 +317,12 @@ func (s *SatoriClient) PropertiesGet(ctx context.Context, id string) (*runtime.P
 		return nil, runtime.ErrSatoriConfigurationInvalid
 	}
 
-	var entry *runtime.Properties
-	var found bool
-	if s.cacheEnabled {
-		s.propertiesCacheMutex.RLock()
-		entry, found = s.propertiesCache[ctx]
-		s.propertiesCacheMutex.RUnlock()
-	}
+	s.propertiesCacheMutex.RLock()
+	entry, found := s.propertiesCache[ctx]
+	s.propertiesCacheMutex.RUnlock()
 
-	if !s.cacheEnabled || !found {
-		url := s.url.String() + "/v1/properties"
+	if !found {
+		url := s.url.JoinPath("/v1/properties").String()
 
 		sessionToken, err := s.generateToken(ctx, id)
 		if err != nil {
@@ -363,7 +380,7 @@ func (s *SatoriClient) PropertiesUpdate(ctx context.Context, id string, properti
 		return runtime.ErrSatoriConfigurationInvalid
 	}
 
-	url := s.url.String() + "/v1/properties"
+	url := s.url.JoinPath("/v1/properties").String()
 
 	sessionToken, err := s.generateToken(ctx, id)
 	if err != nil {
@@ -422,7 +439,7 @@ func (s *SatoriClient) EventsPublish(ctx context.Context, id string, events []*r
 		return runtime.ErrSatoriConfigurationInvalid
 	}
 
-	url := s.url.String() + "/v1/event"
+	url := s.url.JoinPath("/v1/event").String()
 
 	evts := make([]*event, 0, len(events))
 	for i, e := range events {
@@ -486,7 +503,7 @@ func (s *SatoriClient) ServerEventsPublish(ctx context.Context, events []*runtim
 		return runtime.ErrSatoriConfigurationInvalid
 	}
 
-	url := s.url.String() + "/v1/server-event"
+	url := s.url.JoinPath("/v1/server-event").String()
 
 	evts := make([]*event, 0, len(events))
 	for i, e := range events {
@@ -541,17 +558,18 @@ func (s *SatoriClient) ServerEventsPublish(ctx context.Context, events []*runtim
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
 // @param id(type=string) The identifier of the identity.
 // @param names(type=[]string, optional=true, default=[]) Optional list of experiment names to filter.
+// @param labels(type=[]string, optional=true, default=[]) Optional list of experiment labels to filter.
 // @return experiments(*runtime.ExperimentList) The experiment list.
 // @return error(error) An optional error value if an error occurred.
-func (s *SatoriClient) ExperimentsList(ctx context.Context, id string, names ...string) (*runtime.ExperimentList, error) {
+func (s *SatoriClient) ExperimentsList(ctx context.Context, id string, names, labels []string) (*runtime.ExperimentList, error) {
 	if s.invalidConfig {
 		return nil, runtime.ErrSatoriConfigurationInvalid
 	}
 
-	entry, missingKeys := s.experimentsCache.Get(ctx, names...)
+	entry, missingNames, missingLabels := s.experimentsCache.Get(ctx, names, labels)
 
-	if !s.cacheEnabled || entry == nil || len(missingKeys) > 0 {
-		url := s.url.String() + "/v1/experiment"
+	if !s.cacheEnabled || entry == nil || len(missingNames) > 0 || len(missingLabels) > 0 {
+		url := s.url.JoinPath("/v1/experiment").String()
 
 		sessionToken, err := s.generateToken(ctx, id)
 		if err != nil {
@@ -564,14 +582,20 @@ func (s *SatoriClient) ExperimentsList(ctx context.Context, id string, names ...
 		}
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", sessionToken))
 
-		if len(missingKeys) > 0 {
-			names = missingKeys
-		}
+		names = missingNames
+		labels = missingLabels
 
 		if len(names) > 0 {
 			q := req.URL.Query()
 			for _, n := range names {
-				q.Set("names", n)
+				q.Add("names", n)
+			}
+			req.URL.RawQuery = q.Encode()
+		}
+		if len(labels) > 0 {
+			q := req.URL.Query()
+			for _, n := range labels {
+				q.Add("labels", n)
 			}
 			req.URL.RawQuery = q.Encode()
 		}
@@ -602,7 +626,7 @@ func (s *SatoriClient) ExperimentsList(ctx context.Context, id string, names ...
 			}
 
 			if len(names) > 0 {
-				s.experimentsCache.Add(ctx, newExperiments)
+				s.experimentsCache.Add(ctx, names, labels, newExperiments)
 			} else {
 				s.experimentsCache.SetAll(ctx, newExperiments)
 			}
@@ -626,6 +650,11 @@ type flagCacheEntry struct {
 }
 
 type flagOverridesCacheEntry struct {
+	*runtime.FlagOverrides
+	values []flagOverridesCacheEntryValue
+}
+
+type flagOverridesCacheEntryValue struct {
 	*runtime.FlagOverride
 	Value unique.Handle[string]
 }
@@ -635,17 +664,18 @@ type flagOverridesCacheEntry struct {
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
 // @param id(type=string) The identifier of the identity. Set to empty string to fetch all default flag values.
 // @param names(type=[]string, optional=true, default=[]) Optional list of flag names to filter.
+// @param labels(type=[]string, optional=true, default=[]) Optional list of flag labels to filter.
 // @return flags(*runtime.FlagList) The flag list.
 // @return error(error) An optional error value if an error occurred.
-func (s *SatoriClient) FlagsList(ctx context.Context, id string, names ...string) (*runtime.FlagList, error) {
+func (s *SatoriClient) FlagsList(ctx context.Context, id string, names, labels []string) (*runtime.FlagList, error) {
 	if s.invalidConfig {
 		return nil, runtime.ErrSatoriConfigurationInvalid
 	}
 
-	entry, missingKeys := s.flagsCache.Get(ctx, names...)
+	entry, missingNames, missingLabels := s.flagsCache.Get(ctx, names, labels)
 
-	if !s.cacheEnabled || entry == nil || len(missingKeys) > 0 {
-		url := s.url.String() + "/v1/flag"
+	if !s.cacheEnabled || entry == nil || len(missingNames) > 0 || len(missingLabels) > 0 {
+		url := s.url.JoinPath("/v1/flag").String()
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
@@ -662,14 +692,20 @@ func (s *SatoriClient) FlagsList(ctx context.Context, id string, names ...string
 			req.SetBasicAuth(s.apiKey, "")
 		}
 
-		if len(missingKeys) > 0 {
-			names = missingKeys
-		}
+		names = missingNames
+		labels = missingLabels
 
 		if len(names) > 0 {
 			q := req.URL.Query()
 			for _, n := range names {
 				q.Add("names", n)
+			}
+			req.URL.RawQuery = q.Encode()
+		}
+		if len(labels) > 0 {
+			q := req.URL.Query()
+			for _, n := range labels {
+				q.Add("labels", n)
 			}
 			req.URL.RawQuery = q.Encode()
 		}
@@ -703,7 +739,7 @@ func (s *SatoriClient) FlagsList(ctx context.Context, id string, names ...string
 			}
 
 			if len(names) > 0 {
-				s.flagsCache.Add(ctx, entries)
+				s.flagsCache.Add(ctx, names, labels, entries)
 			} else {
 				s.flagsCache.SetAll(ctx, entries)
 			}
@@ -731,17 +767,18 @@ func (s *SatoriClient) FlagsList(ctx context.Context, id string, names ...string
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
 // @param id(type=string) The identifier of the identity. Set to empty string to fetch all default flag values.
 // @param names(type=[]string, optional=true, default=[]) Optional list of flag names to filter.
+// @param labels(type=[]string, optional=true, default=[]) Optional list of flag labels to filter.
 // @return flagsOverrides(*runtime.FlagOverridesList) The flag list.
 // @return error(error) An optional error value if an error occurred.
-func (s *SatoriClient) FlagsOverridesList(ctx context.Context, id string, names ...string) (*runtime.FlagOverridesList, error) {
+func (s *SatoriClient) FlagsOverridesList(ctx context.Context, id string, names, labels []string) (*runtime.FlagOverridesList, error) {
 	if s.invalidConfig {
 		return nil, runtime.ErrSatoriConfigurationInvalid
 	}
 
-	entry, missingKeys := s.flagsOverridesCache.Get(ctx, names...)
+	entry, missingNames, missingLabels := s.flagsOverridesCache.Get(ctx, names, labels)
 
-	if !s.cacheEnabled || entry == nil || len(missingKeys) > 0 {
-		url := s.url.String() + "/v1/flag/override"
+	if !s.cacheEnabled || entry == nil || len(missingNames) > 0 || len(missingLabels) > 0 {
+		url := s.url.JoinPath("/v1/flag/override").String()
 
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
@@ -758,14 +795,20 @@ func (s *SatoriClient) FlagsOverridesList(ctx context.Context, id string, names 
 			req.SetBasicAuth(s.apiKey, "")
 		}
 
-		if len(missingKeys) > 0 {
-			names = missingKeys
-		}
+		names = missingNames
+		labels = missingLabels
 
 		if len(names) > 0 {
 			q := req.URL.Query()
 			for _, n := range names {
 				q.Add("names", n)
+			}
+			req.URL.RawQuery = q.Encode()
+		}
+		if len(labels) > 0 {
+			q := req.URL.Query()
+			for _, n := range labels {
+				q.Add("labels", n)
 			}
 			req.URL.RawQuery = q.Encode()
 		}
@@ -788,21 +831,23 @@ func (s *SatoriClient) FlagsOverridesList(ctx context.Context, id string, names 
 				return nil, err
 			}
 
-			entries := make(map[string][]flagOverridesCacheEntry, len(flagOverrides.Flags))
+			entries := make(map[string]flagOverridesCacheEntry, len(flagOverrides.Flags))
 			for _, f := range flagOverrides.Flags {
-				overrides := make([]flagOverridesCacheEntry, 0, len(f.Overrides))
+				entry := flagOverridesCacheEntry{
+					FlagOverrides: f,
+					values:        make([]flagOverridesCacheEntryValue, 0, len(f.Overrides)),
+				}
 				for _, o := range f.Overrides {
-					overrides = append(overrides, flagOverridesCacheEntry{
+					entry.values = append(entry.values, flagOverridesCacheEntryValue{
 						FlagOverride: o,
 						Value:        unique.Make(o.Value),
 					})
 				}
-				entry = append(entry, overrides)
-				entries[f.FlagName] = overrides
+				entries[f.FlagName] = entry
 			}
 
 			if len(names) > 0 {
-				s.flagsOverridesCache.Add(ctx, entries)
+				s.flagsOverridesCache.Add(ctx, names, labels, entries)
 			} else {
 				s.flagsOverridesCache.SetAll(ctx, entries)
 			}
@@ -819,9 +864,9 @@ func (s *SatoriClient) FlagsOverridesList(ctx context.Context, id string, names 
 
 	flagOverridesList := make([]*runtime.FlagOverrides, 0, len(entry))
 	for _, flagEntry := range entry {
-		flagOverrides := make([]*runtime.FlagOverride, 0, len(flagEntry))
+		flagOverrides := make([]*runtime.FlagOverride, 0, len(flagEntry.values))
 		var flagName string
-		for _, flagOverride := range flagEntry {
+		for _, flagOverride := range flagEntry.values {
 			flagName = flagOverride.Name
 			fo := flagOverride.FlagOverride
 			fo.Value = flagOverride.Value.Value()
@@ -830,6 +875,7 @@ func (s *SatoriClient) FlagsOverridesList(ctx context.Context, id string, names 
 
 		flagOverridesList = append(flagOverridesList, &runtime.FlagOverrides{
 			FlagName:  flagName,
+			Labels:    flagEntry.Labels,
 			Overrides: flagOverrides,
 		})
 	}
@@ -844,17 +890,18 @@ func (s *SatoriClient) FlagsOverridesList(ctx context.Context, id string, names 
 // @param ctx(type=context.Context) The context object represents information about the server and requester.
 // @param id(type=string) The identifier of the identity.
 // @param names(type=[]string, optional=true, default=[]) Optional list of live event names to filter.
+// @param labels(type=[]string, optional=true, default=[]) Optional list of live event labels to filter.
 // @return liveEvents(*runtime.LiveEventsList) The live event list.
 // @return error(error) An optional error value if an error occurred.
-func (s *SatoriClient) LiveEventsList(ctx context.Context, id string, names ...string) (*runtime.LiveEventList, error) {
+func (s *SatoriClient) LiveEventsList(ctx context.Context, id string, names, labels []string) (*runtime.LiveEventList, error) {
 	if s.invalidConfig {
 		return nil, runtime.ErrSatoriConfigurationInvalid
 	}
 
-	entry, missingKeys := s.liveEventsCache.Get(ctx, names...)
+	entry, missingNames, missingLabels := s.liveEventsCache.Get(ctx, names, labels)
 
-	if !s.cacheEnabled || entry == nil || len(missingKeys) > 0 {
-		url := s.url.String() + "/v1/live-event"
+	if !s.cacheEnabled || entry == nil || len(missingNames) > 0 || len(missingLabels) > 0 {
+		url := s.url.JoinPath("/v1/live-event").String()
 
 		sessionToken, err := s.generateToken(ctx, id)
 		if err != nil {
@@ -867,14 +914,20 @@ func (s *SatoriClient) LiveEventsList(ctx context.Context, id string, names ...s
 		}
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", sessionToken))
 
-		if len(missingKeys) > 0 {
-			names = missingKeys
-		}
+		names = missingNames
+		labels = missingLabels
 
 		if len(names) > 0 {
 			q := req.URL.Query()
 			for _, n := range names {
 				q.Add("names", n)
+			}
+			req.URL.RawQuery = q.Encode()
+		}
+		if len(labels) > 0 {
+			q := req.URL.Query()
+			for _, n := range labels {
+				q.Add("labels", n)
 			}
 			req.URL.RawQuery = q.Encode()
 		}
@@ -904,7 +957,7 @@ func (s *SatoriClient) LiveEventsList(ctx context.Context, id string, names ...s
 			}
 
 			if len(names) > 0 {
-				s.liveEventsCache.Add(ctx, entries)
+				s.liveEventsCache.Add(ctx, names, labels, entries)
 			} else {
 				s.liveEventsCache.SetAll(ctx, entries)
 			}
@@ -928,9 +981,10 @@ func (s *SatoriClient) LiveEventsList(ctx context.Context, id string, names ...s
 // @param limit(type=int) The max number of messages to return.
 // @param forward(type=bool) True if listing should be older messages to newer, false if reverse.
 // @param cursor(type=string) A pagination cursor, if any.
+// @param messageIDs(type=[]string, optional=true, default=[]) Optional list of exact message identifiers to fetch instead.
 // @return messages(*runtime.MessageList) The messages list.
 // @return error(error) An optional error value if an error occurred.
-func (s *SatoriClient) MessagesList(ctx context.Context, id string, limit int, forward bool, cursor string) (*runtime.MessageList, error) {
+func (s *SatoriClient) MessagesList(ctx context.Context, id string, limit int, forward bool, cursor string, messageIDs []string) (*runtime.MessageList, error) {
 	if s.invalidConfig {
 		return nil, runtime.ErrSatoriConfigurationInvalid
 	}
@@ -939,7 +993,7 @@ func (s *SatoriClient) MessagesList(ctx context.Context, id string, limit int, f
 		return nil, errors.New("limit must be greater than zero")
 	}
 
-	url := s.url.String() + "/v1/message"
+	url := s.url.JoinPath("/v1/message").String()
 
 	sessionToken, err := s.generateToken(ctx, id)
 	if err != nil {
@@ -956,6 +1010,9 @@ func (s *SatoriClient) MessagesList(ctx context.Context, id string, limit int, f
 	q.Set("forward", strconv.FormatBool(forward))
 	if cursor != "" {
 		q.Set("cursor", cursor)
+	}
+	for _, messageID := range messageIDs {
+		q.Add("message_ids", messageID)
 	}
 	req.URL.RawQuery = q.Encode()
 
@@ -999,7 +1056,7 @@ func (s *SatoriClient) MessageUpdate(ctx context.Context, id, messageId string, 
 		return runtime.ErrSatoriConfigurationInvalid
 	}
 
-	url := s.url.String() + fmt.Sprintf("/v1/message/%s", messageId)
+	url := s.url.JoinPath(fmt.Sprintf("/v1/message/%s", messageId)).String()
 
 	sessionToken, err := s.generateToken(ctx, id)
 	if err != nil {
@@ -1055,7 +1112,7 @@ func (s *SatoriClient) MessageDelete(ctx context.Context, id, messageId string) 
 		return errors.New("message id cannot be an empty string")
 	}
 
-	url := s.url.String() + fmt.Sprintf("/v1/message/%s", messageId)
+	url := s.url.JoinPath(fmt.Sprintf("/v1/message/%s", messageId)).String()
 
 	sessionToken, err := s.generateToken(ctx, id)
 	if err != nil {
@@ -1087,18 +1144,268 @@ func (s *SatoriClient) MessageDelete(ctx context.Context, id, messageId string) 
 	}
 }
 
-type satoriCacheEntry[T any] struct {
+func (s *SatoriClient) ConsoleMessageTemplatesList(ctx context.Context, in *console.Template_ListRequest) (*console.Template_ListResponse, error) {
+	if s.serverKey == "" {
+		return nil, runtime.ErrSatoriConfigurationInvalid
+	}
+
+	url := s.url.JoinPath("/v1/console/template").String()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(s.serverKey, "")
+	q := req.URL.Query()
+	if in.GetPagination() != nil {
+		if in.Pagination.Limit > 0 {
+			q.Set("pagination.limit", strconv.Itoa(int(in.Pagination.Limit)))
+		}
+		if in.Pagination.Cursor != "" {
+			q.Set("pagination.cursor", in.Pagination.Cursor)
+		}
+	}
+	if in.Search.GetName() != nil {
+		if len(in.Search.GetName().GetOr()) > 0 {
+			for _, query := range in.Search.GetName().GetOr() {
+				q.Add("search.name.or", query)
+			}
+		}
+		if in.Search.GetName().GetExact() != "" {
+			q.Set("search.name.exact", in.Search.GetName().GetExact())
+		}
+		if in.Search.GetName().GetLike() != "" {
+			q.Set("search.name.like", in.Search.GetName().GetLike())
+		}
+	}
+	if in.Search.GetLabelName() != nil {
+		if len(in.Search.GetLabelName().GetOr()) > 0 {
+			for _, query := range in.Search.GetLabelName().GetOr() {
+				q.Add("search.label_name.or", query)
+			}
+		}
+		if len(in.Search.GetLabelName().GetAnd()) > 0 {
+			for _, query := range in.Search.GetLabelName().GetAnd() {
+				q.Add("search.label_name.and", query)
+			}
+		}
+	}
+	req.URL.RawQuery = q.Encode()
+
+	res, err := s.httpc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	defer res.Body.Close()
+
+	switch res.StatusCode {
+	case 200:
+		resBody, err := io.ReadAll(res.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		var out console.Template_ListResponse
+		if err = protojson.Unmarshal(resBody, &out); err != nil {
+			return nil, err
+		}
+
+		return &out, nil
+	default:
+		errBody, err := io.ReadAll(res.Body)
+		if err == nil && len(errBody) > 0 {
+			return nil, fmt.Errorf("%d status code: %s", res.StatusCode, string(errBody))
+		}
+		return nil, fmt.Errorf("%d status code", res.StatusCode)
+	}
+}
+
+func convertTemplateOverride(templateOverride *runtime.SatoriMessageTemplateOverride, seen map[*runtime.SatoriMessageTemplateOverride]struct{}) *console.SendDirectMessageRequest_TemplateOverride {
+	if templateOverride == nil {
+		return nil
+	}
+	if _, seenBefore := seen[templateOverride]; seenBefore {
+		// Prevent circular references.
+		return nil
+	}
+	seen[templateOverride] = struct{}{}
+	override := &console.SendDirectMessageRequest_TemplateOverride{
+		Title:        templateOverride.Title,
+		Value:        templateOverride.Value,
+		ImageUrl:     templateOverride.ImageURL,
+		JsonMetadata: templateOverride.JsonMetadata,
+		//Variants:     nil,
+	}
+	if templateOverride.Variants != nil {
+		override.Variants = make(map[string]*console.SendDirectMessageRequest_TemplateOverride, len(templateOverride.Variants))
+		for key, variant := range templateOverride.Variants {
+			override.Variants[key] = convertTemplateOverride(variant, seen)
+		}
+	}
+	return override
+}
+
+func ConvertIntegrationToConsole(integration runtime.SatoriMessageIntegration) console.MessageIntegrationType {
+	switch integration {
+	case runtime.SatoriMessageIntegrationFCM:
+		return console.MessageIntegrationType_FCM
+	case runtime.SatoriMessageIntegrationAPNS:
+		return console.MessageIntegrationType_APNS
+	case runtime.SatoriMessageIntegrationFacebookNotification:
+		return console.MessageIntegrationType_FACEBOOK_NOTIFICATION
+	case runtime.SatoriMessageIntegrationOneSignalNotification:
+		return console.MessageIntegrationType_ONESIGNAL_NOTIFICATION
+	case runtime.SatoriMessageIntegrationWebhookNotification:
+		return console.MessageIntegrationType_WEBHOOK_NOTIFICATION
+	case runtime.SatoriMessageIntegrationUnknown:
+		fallthrough
+	default:
+		return console.MessageIntegrationType_UNKNOWN_MESSAGE_TYPE
+	}
+}
+
+func ConvertIntegrationToRuntime(integration console.MessageIntegrationType) runtime.SatoriMessageIntegration {
+	switch integration {
+	case console.MessageIntegrationType_FCM:
+		return runtime.SatoriMessageIntegrationFCM
+	case console.MessageIntegrationType_APNS:
+		return runtime.SatoriMessageIntegrationAPNS
+	case console.MessageIntegrationType_FACEBOOK_NOTIFICATION:
+		return runtime.SatoriMessageIntegrationFacebookNotification
+	case console.MessageIntegrationType_ONESIGNAL_NOTIFICATION:
+		return runtime.SatoriMessageIntegrationOneSignalNotification
+	case console.MessageIntegrationType_WEBHOOK_NOTIFICATION:
+		return runtime.SatoriMessageIntegrationWebhookNotification
+	case console.MessageIntegrationType_UNKNOWN_MESSAGE_TYPE:
+		fallthrough
+	default:
+		return runtime.SatoriMessageIntegrationUnknown
+	}
+}
+
+func ConvertChannelToConsole(channel runtime.SatoriMessageIntegrationChannel) console.MessageChannelType {
+	switch channel {
+	case runtime.SatoriMessageIntegrationChannelPush:
+		return console.MessageChannelType_PUSH
+	case runtime.SatoriMessageIntegrationChannelEmail:
+		return console.MessageChannelType_EMAIL
+	case runtime.SatoriMessageIntegrationChannelDefault:
+		fallthrough
+	default:
+		return console.MessageChannelType_DEFAULT
+	}
+}
+
+func ConvertChannelToRuntime(channel console.MessageChannelType) runtime.SatoriMessageIntegrationChannel {
+	switch channel {
+	case console.MessageChannelType_PUSH:
+		return runtime.SatoriMessageIntegrationChannelPush
+	case console.MessageChannelType_EMAIL:
+		return runtime.SatoriMessageIntegrationChannelEmail
+	case console.MessageChannelType_DEFAULT:
+		fallthrough
+	default:
+		return runtime.SatoriMessageIntegrationChannelDefault
+	}
+}
+
+func (s *SatoriClient) ConsoleDirectMessageSend(ctx context.Context, templateId string, recipientIDs []string, integrations []runtime.SatoriMessageIntegration, persist bool, channels map[runtime.SatoriMessageIntegration]*runtime.SatoriMessageIntegrationChannels, templateOverride *runtime.SatoriMessageTemplateOverride) (*runtime.SatoriMessageSendResults, error) {
+	if s.serverKey == "" {
+		return nil, runtime.ErrSatoriConfigurationInvalid
+	}
+
+	url := s.url.String() + "/v1/console/message-direct"
+
+	request := &console.SendDirectMessageRequest{
+		TemplateId:  templateId,
+		IdentityIds: recipientIDs,
+		//Integrations:     nil,
+		Persist: persist,
+		//Channels:         nil,
+		//TemplateOverride: nil,
+	}
+	if integrations != nil {
+		request.Integrations = make([]console.MessageIntegrationType, 0, len(integrations))
+		for _, integration := range integrations {
+			request.Integrations = append(request.Integrations, ConvertIntegrationToConsole(integration))
+		}
+	}
+	if channels != nil {
+		request.Channels = make(map[int32]*console.SendDirectMessageRequest_MessageChannels, len(channels))
+		for integration, channel := range channels {
+			var consoleChannels *console.SendDirectMessageRequest_MessageChannels
+			if channel != nil {
+				consoleChannels = &console.SendDirectMessageRequest_MessageChannels{}
+				if channel.Channels != nil {
+					consoleChannels.Channels = make([]console.MessageChannelType, 0, len(channel.Channels))
+					for _, ch := range channel.Channels {
+						consoleChannels.Channels = append(consoleChannels.Channels, ConvertChannelToConsole(ch))
+					}
+				}
+			}
+
+			request.Channels[int32(ConvertIntegrationToConsole(integration))] = consoleChannels
+		}
+	}
+	if templateOverride != nil {
+		request.TemplateOverride = convertTemplateOverride(templateOverride, make(map[*runtime.SatoriMessageTemplateOverride]struct{}, 1))
+	}
+
+	jsonBytes, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBytes))
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(s.serverKey, "")
+
+	res, err := s.httpc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	defer res.Body.Close()
+
+	switch res.StatusCode {
+	case 200:
+		resBody, err := io.ReadAll(res.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		var out runtime.SatoriMessageSendResults
+		if err = json.Unmarshal(resBody, &out); err != nil {
+			return nil, err
+		}
+
+		return &out, nil
+	default:
+		errBody, err := io.ReadAll(res.Body)
+		if err == nil && len(errBody) > 0 {
+			return nil, fmt.Errorf("%d status code: %s", res.StatusCode, string(errBody))
+		}
+		return nil, fmt.Errorf("%d status code", res.StatusCode)
+	}
+}
+
+type satoriCacheEntry[T runtime.SatoriLabeled] struct {
 	containsAll bool
+	names       map[string]struct{}
+	labels      map[string]struct{}
 	entryData   map[string]T
 }
 
-type satoriCache[T any] struct {
+type satoriCache[T runtime.SatoriLabeled] struct {
 	sync.RWMutex
 	enabled bool
 	entries map[context.Context]*satoriCacheEntry[T]
 }
 
-func newSatoriCache[T any](ctx context.Context, enabled bool) *satoriCache[T] {
+func newSatoriCache[T runtime.SatoriLabeled](ctx context.Context, enabled bool) *satoriCache[T] {
 	if !enabled {
 		return &satoriCache[T]{
 			enabled: false,
@@ -1112,7 +1419,7 @@ func newSatoriCache[T any](ctx context.Context, enabled bool) *satoriCache[T] {
 	}
 
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(satoriCacheTTL)
 		defer ticker.Stop()
 		for {
 			select {
@@ -1133,37 +1440,126 @@ func newSatoriCache[T any](ctx context.Context, enabled bool) *satoriCache[T] {
 	return sc
 }
 
-func (s *satoriCache[T]) Get(ctx context.Context, keys ...string) (values []T, missingKeys []string) {
+func (s *satoriCache[T]) Get(ctx context.Context, names, labels []string) (values []T, missingNames, missingLabels []string) {
 	if !s.enabled {
-		return nil, nil
+		return nil, names, labels
 	}
 	s.RLock()
 	entry, found := s.entries[ctx]
 	defer s.RUnlock()
 
-	switch {
-	case found && len(keys) > 0:
-		for _, name := range keys {
-			if e, ok := entry.entryData[name]; ok {
-				values = append(values, e)
-			} else {
-				missingKeys = append(missingKeys, name)
+	if !found || (len(names) == 0 && len(labels) == 0 && !entry.containsAll) {
+		// Asked for all keys, but they were never fetched, or no cache entries exist for the context.
+		// There may be a partially available data set locally, but it's hard to know the scope of
+		// anything that might be missing, so the caller needs to fetch all data anyway to be sure.
+		return nil, names, labels
+	}
+
+	if len(names) > 0 && len(labels) > 0 {
+		// Prepare fast lookup maps for requested names and labels.
+		namesMap := make(map[string]struct{}, len(names))
+		for _, name := range names {
+			namesMap[name] = struct{}{}
+		}
+		labelsMap := make(map[string]struct{}, len(labels))
+		for _, label := range labels {
+			labelsMap[label] = struct{}{}
+			if entry.containsAll {
+				// If entry contains all data, no labels can be missing.
+				continue
+			}
+			// Check if any requested labels still need to be fetched.
+			if _, ok := entry.labels[label]; !ok {
+				missingLabels = append(missingLabels, label)
 			}
 		}
-		return values, missingKeys
-	case found && len(keys) == 0 && entry.containsAll:
+
+		// Iterate over all entries and see if they match either the name or the label.
+		for name, e := range entry.entryData {
+			if _, ok := namesMap[name]; ok {
+				delete(namesMap, name)
+				values = append(values, e)
+				continue
+			}
+			for _, eLabel := range e.GetLabels() {
+				if _, ok := labelsMap[eLabel]; ok {
+					values = append(values, e)
+					break
+				}
+			}
+		}
+
+		// Check if any requested names still need to be fetched.
+		if !entry.containsAll {
+			if l := len(namesMap); l > 0 {
+				missingNames = make([]string, 0, l)
+				for name := range namesMap {
+					if len(missingLabels) == 0 {
+						// Check if the flag name was requested before and just did not exist in Satori.
+						// If there are missing labels we will make a follow-up request to Satori anyway,
+						// so see if the flag name has appeared since the last request, but otherwise it
+						// is not worth querying Satori just for flag names.
+						if _, wasRequested := entry.names[name]; wasRequested {
+							// This flag name requested before but is still missing, so it must not exist in
+							// Satori. Do not consider it missing, it should not be re-requested for its own
+							// sake unless there will be another request to Satori anyway.
+							continue
+						}
+					}
+					// We'll be going to Satori for missing labels anyway, try our luck with these flag names too just in case.
+					missingNames = append(missingNames, name)
+				}
+			}
+		}
+	} else if len(names) > 0 {
+		// Only name filters are present.
+		for _, name := range names {
+			if e, ok := entry.entryData[name]; ok {
+				values = append(values, e)
+			} else if !entry.containsAll {
+				// Data was incomplete and flag name was not in the data, but
+				// only consider it missing if it was not already requested.
+				if _, wasRequested := entry.names[name]; !wasRequested {
+					missingNames = append(missingNames, name)
+				}
+			}
+		}
+	} else if len(labels) > 0 {
+		// Only label filters are present.
+		labelsMap := make(map[string]struct{}, len(labels))
+		for _, label := range labels {
+			labelsMap[label] = struct{}{}
+			if entry.containsAll {
+				// If entry contains all data, no labels can be missing.
+				continue
+			}
+			// Check if any requested labels still need to be fetched.
+			if _, ok := entry.labels[label]; !ok {
+				missingLabels = append(missingLabels, label)
+			}
+		}
+
+		// Iterate over all entries and see if they match a desired label.
+		for _, e := range entry.entryData {
+			for _, eLabel := range e.GetLabels() {
+				if _, ok := labelsMap[eLabel]; ok {
+					values = append(values, e)
+					break
+				}
+			}
+		}
+	} else {
+		// All data is available, and all data has been requested.
 		values = make([]T, 0, len(entry.entryData))
 		for _, e := range entry.entryData {
 			values = append(values, e)
 		}
-		return values, nil
-	default:
-		// Asked for all keys, but they were never fetched, or no cache entries exist for the context.
-		return nil, nil
 	}
+
+	return values, missingNames, missingLabels
 }
 
-func (s *satoriCache[T]) Add(ctx context.Context, values map[string]T) {
+func (s *satoriCache[T]) Add(ctx context.Context, names, labels []string, values map[string]T) {
 	if !s.enabled {
 		return
 	}
@@ -1172,9 +1568,17 @@ func (s *satoriCache[T]) Add(ctx context.Context, values map[string]T) {
 	if !ok {
 		entry = &satoriCacheEntry[T]{
 			containsAll: false,
+			names:       map[string]struct{}{},
+			labels:      map[string]struct{}{},
 			entryData:   make(map[string]T, len(values)),
 		}
 		s.entries[ctx] = entry
+	}
+	for _, name := range names {
+		entry.names[name] = struct{}{}
+	}
+	for _, label := range labels {
+		entry.labels[label] = struct{}{}
 	}
 	maps.Copy(entry.entryData, values)
 	s.Unlock()
