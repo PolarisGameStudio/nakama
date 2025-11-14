@@ -1689,6 +1689,653 @@ public class ChallengeResponse
 
 ---
 
+## Advanced Social Features (Copilot Module)
+
+The copilot module provides advanced social and leaderboard features including friend leaderboards, score aggregation, and enhanced friend management with notifications.
+
+### Feature Overview
+
+- **Friend Leaderboards** - Compete only with your friends
+- **Score Aggregation** - Global power rank across all games
+- **Friend Invites** - Send invites with notifications
+- **Social Notifications** - Get notified of friend activities
+
+### Friend Leaderboards
+
+Friend leaderboards filter rankings to show only you and your friends.
+
+#### Creating Friend Leaderboards
+
+First-time setup (usually done by admin):
+
+```csharp
+public async Task CreateFriendLeaderboards()
+{
+    try
+    {
+        var result = await client.RpcAsync(
+            session,
+            "create_all_leaderboards_with_friends",
+            "{}"
+        );
+        
+        var response = JsonUtility.FromJson<CreateLeaderboardsResponse>(result.Payload);
+        Debug.Log($"Created {response.created.Length} friend leaderboards");
+    }
+    catch (ApiResponseException ex)
+    {
+        Debug.LogError($"Failed to create friend leaderboards: {ex.Message}");
+    }
+}
+
+[Serializable]
+public class CreateLeaderboardsResponse
+{
+    public bool success;
+    public string[] created;
+    public string[] skipped;
+    public int totalProcessed;
+}
+```
+
+#### Submitting Scores to Friend Leaderboards
+
+```csharp
+public async Task SubmitScoreWithFriends(string gameId, long score)
+{
+    try
+    {
+        var payload = new ScoreSubmission
+        {
+            gameId = gameId,
+            score = score
+        };
+        
+        var result = await client.RpcAsync(
+            session,
+            "submit_score_with_friends_sync",
+            JsonUtility.ToJson(payload)
+        );
+        
+        var response = JsonUtility.FromJson<ScoreSubmissionResponse>(result.Payload);
+        Debug.Log($"Score submitted to friend leaderboards: {response.score}");
+    }
+    catch (ApiResponseException ex)
+    {
+        Debug.LogError($"Failed to submit score: {ex.Message}");
+    }
+}
+
+[Serializable]
+public class ScoreSubmission
+{
+    public string gameId;
+    public long score;
+}
+
+[Serializable]
+public class ScoreSubmissionResponse
+{
+    public bool success;
+    public string gameId;
+    public long score;
+    public string userId;
+    public string submittedAt;
+}
+```
+
+#### Getting Friend Leaderboard Rankings
+
+```csharp
+public async Task<FriendLeaderboardRecord[]> GetFriendLeaderboard(string leaderboardId, int limit = 10)
+{
+    try
+    {
+        var payload = new GetFriendLeaderboardRequest
+        {
+            leaderboardId = leaderboardId,
+            limit = limit
+        };
+        
+        var result = await client.RpcAsync(
+            session,
+            "get_friend_leaderboard",
+            JsonUtility.ToJson(payload)
+        );
+        
+        var response = JsonUtility.FromJson<FriendLeaderboardResponse>(result.Payload);
+        Debug.Log($"Found {response.records.Length} friend records");
+        return response.records;
+    }
+    catch (ApiResponseException ex)
+    {
+        Debug.LogError($"Failed to get friend leaderboard: {ex.Message}");
+        return new FriendLeaderboardRecord[0];
+    }
+}
+
+[Serializable]
+public class GetFriendLeaderboardRequest
+{
+    public string leaderboardId;
+    public int limit;
+}
+
+[Serializable]
+public class FriendLeaderboardResponse
+{
+    public bool success;
+    public FriendLeaderboardRecord[] records;
+    public int totalFriends;
+}
+
+[Serializable]
+public class FriendLeaderboardRecord
+{
+    public string ownerId;
+    public string username;
+    public long score;
+    public int rank;
+}
+```
+
+### Score Aggregation & Global Power Rank
+
+Track players' combined scores across all games for a unified ranking system.
+
+#### Submitting Score with Aggregation
+
+```csharp
+public async Task SubmitScoreWithAggregate(string gameId, long score)
+{
+    try
+    {
+        var payload = new ScoreSubmission
+        {
+            gameId = gameId,
+            score = score
+        };
+        
+        var result = await client.RpcAsync(
+            session,
+            "submit_score_with_aggregate",
+            JsonUtility.ToJson(payload)
+        );
+        
+        var response = JsonUtility.FromJson<AggregateScoreResponse>(result.Payload);
+        
+        Debug.Log($"Individual Score: {response.individualScore}");
+        Debug.Log($"Aggregate Score: {response.aggregateScore}");
+        Debug.Log($"Games Processed: {response.leaderboardsProcessed}");
+    }
+    catch (ApiResponseException ex)
+    {
+        Debug.LogError($"Failed to submit aggregate score: {ex.Message}");
+    }
+}
+
+[Serializable]
+public class AggregateScoreResponse
+{
+    public bool success;
+    public string gameId;
+    public long individualScore;
+    public long aggregateScore;
+    public int leaderboardsProcessed;
+}
+```
+
+#### UI Example: Showing Both Scores
+
+```csharp
+public class LeaderboardUI : MonoBehaviour
+{
+    [Header("UI References")]
+    public Text individualScoreText;
+    public Text aggregateScoreText;
+    public Text globalRankText;
+    
+    public async void OnScoreSubmitted(string gameId, long score)
+    {
+        // Submit score with aggregation
+        var response = await SubmitScoreWithAggregate(gameId, score);
+        
+        // Update UI
+        individualScoreText.text = $"Game Score: {response.individualScore:N0}";
+        aggregateScoreText.text = $"Total Power: {response.aggregateScore:N0}";
+        
+        // Get global rank
+        var globalLeaderboard = await client.ListLeaderboardRecordsAroundOwnerAsync(
+            session,
+            "leaderboard_global",
+            session.UserId,
+            1
+        );
+        
+        if (globalLeaderboard.OwnerRecords.Count > 0)
+        {
+            globalRankText.text = $"Global Rank: #{globalLeaderboard.OwnerRecords[0].Rank}";
+        }
+    }
+}
+```
+
+### Friend Invites with Notifications
+
+Send friend requests with automatic notifications.
+
+#### Sending Friend Invite
+
+```csharp
+public async Task SendFriendInvite(string targetUserId, string message = "Let's be friends!")
+{
+    try
+    {
+        var payload = new FriendInviteRequest
+        {
+            targetUserId = targetUserId,
+            message = message
+        };
+        
+        var result = await client.RpcAsync(
+            session,
+            "send_friend_invite",
+            JsonUtility.ToJson(payload)
+        );
+        
+        var response = JsonUtility.FromJson<FriendInviteResponse>(result.Payload);
+        Debug.Log($"Friend invite sent: {response.inviteId}");
+    }
+    catch (ApiResponseException ex)
+    {
+        Debug.LogError($"Failed to send friend invite: {ex.Message}");
+    }
+}
+
+[Serializable]
+public class FriendInviteRequest
+{
+    public string targetUserId;
+    public string message;
+}
+
+[Serializable]
+public class FriendInviteResponse
+{
+    public bool success;
+    public string inviteId;
+    public string targetUserId;
+    public string status;
+}
+```
+
+#### Accepting Friend Invite
+
+```csharp
+public async Task AcceptFriendInvite(string inviteId)
+{
+    try
+    {
+        var payload = new AcceptInviteRequest { inviteId = inviteId };
+        
+        var result = await client.RpcAsync(
+            session,
+            "accept_friend_invite",
+            JsonUtility.ToJson(payload)
+        );
+        
+        var response = JsonUtility.FromJson<AcceptInviteResponse>(result.Payload);
+        Debug.Log($"Friend added: {response.friendUsername}");
+    }
+    catch (ApiResponseException ex)
+    {
+        Debug.LogError($"Failed to accept invite: {ex.Message}");
+    }
+}
+
+[Serializable]
+public class AcceptInviteRequest
+{
+    public string inviteId;
+}
+
+[Serializable]
+public class AcceptInviteResponse
+{
+    public bool success;
+    public string inviteId;
+    public string friendUserId;
+    public string friendUsername;
+}
+```
+
+#### Declining Friend Invite
+
+```csharp
+public async Task DeclineFriendInvite(string inviteId)
+{
+    try
+    {
+        var payload = new DeclineInviteRequest { inviteId = inviteId };
+        
+        var result = await client.RpcAsync(
+            session,
+            "decline_friend_invite",
+            JsonUtility.ToJson(payload)
+        );
+        
+        Debug.Log("Friend invite declined");
+    }
+    catch (ApiResponseException ex)
+    {
+        Debug.LogError($"Failed to decline invite: {ex.Message}");
+    }
+}
+
+[Serializable]
+public class DeclineInviteRequest
+{
+    public string inviteId;
+}
+```
+
+### Getting Notifications
+
+Retrieve notifications including friend invites and social activities.
+
+```csharp
+public async Task<GameNotification[]> GetNotifications(int limit = 20)
+{
+    try
+    {
+        var payload = new GetNotificationsRequest { limit = limit };
+        
+        var result = await client.RpcAsync(
+            session,
+            "get_notifications",
+            JsonUtility.ToJson(payload)
+        );
+        
+        var response = JsonUtility.FromJson<NotificationsResponse>(result.Payload);
+        Debug.Log($"Retrieved {response.count} notifications");
+        return response.notifications;
+    }
+    catch (ApiResponseException ex)
+    {
+        Debug.LogError($"Failed to get notifications: {ex.Message}");
+        return new GameNotification[0];
+    }
+}
+
+[Serializable]
+public class GetNotificationsRequest
+{
+    public int limit;
+}
+
+[Serializable]
+public class NotificationsResponse
+{
+    public bool success;
+    public GameNotification[] notifications;
+    public int count;
+}
+
+[Serializable]
+public class GameNotification
+{
+    public string id;
+    public string subject;
+    public NotificationContent content;
+    public int code;
+    public string senderId;
+    public string createTime;
+}
+
+[Serializable]
+public class NotificationContent
+{
+    public string type;
+    public string fromUsername;
+    public string inviteId;
+}
+```
+
+### Complete Social Manager Example
+
+A complete Unity class integrating all social features:
+
+```csharp
+using Nakama;
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using UnityEngine;
+
+public class SocialManager : MonoBehaviour
+{
+    private IClient client;
+    private ISession session;
+    
+    // Events
+    public event Action<FriendInviteResponse> OnFriendInviteSent;
+    public event Action<AcceptInviteResponse> OnFriendInviteAccepted;
+    public event Action<GameNotification[]> OnNotificationsReceived;
+    public event Action<FriendLeaderboardRecord[]> OnFriendLeaderboardLoaded;
+    
+    public void Initialize(IClient nakamaClient, ISession nakamaSession)
+    {
+        client = nakamaClient;
+        session = nakamaSession;
+    }
+    
+    // Send friend invite
+    public async void SendFriendInvite(string targetUserId)
+    {
+        var payload = new FriendInviteRequest
+        {
+            targetUserId = targetUserId,
+            message = "Let's compete together!"
+        };
+        
+        try
+        {
+            var result = await client.RpcAsync(
+                session,
+                "send_friend_invite",
+                JsonUtility.ToJson(payload)
+            );
+            
+            var response = JsonUtility.FromJson<FriendInviteResponse>(result.Payload);
+            OnFriendInviteSent?.Invoke(response);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Error sending friend invite: {ex.Message}");
+        }
+    }
+    
+    // Accept friend invite
+    public async void AcceptInvite(string inviteId)
+    {
+        var payload = new AcceptInviteRequest { inviteId = inviteId };
+        
+        try
+        {
+            var result = await client.RpcAsync(
+                session,
+                "accept_friend_invite",
+                JsonUtility.ToJson(payload)
+            );
+            
+            var response = JsonUtility.FromJson<AcceptInviteResponse>(result.Payload);
+            OnFriendInviteAccepted?.Invoke(response);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Error accepting invite: {ex.Message}");
+        }
+    }
+    
+    // Check for new notifications periodically
+    public async void CheckNotifications()
+    {
+        try
+        {
+            var payload = new GetNotificationsRequest { limit = 20 };
+            var result = await client.RpcAsync(
+                session,
+                "get_notifications",
+                JsonUtility.ToJson(payload)
+            );
+            
+            var response = JsonUtility.FromJson<NotificationsResponse>(result.Payload);
+            if (response.count > 0)
+            {
+                OnNotificationsReceived?.Invoke(response.notifications);
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Error checking notifications: {ex.Message}");
+        }
+    }
+    
+    // Load friend leaderboard
+    public async void LoadFriendLeaderboard(string gameId)
+    {
+        try
+        {
+            var leaderboardId = $"leaderboard_{gameId}";
+            var payload = new GetFriendLeaderboardRequest
+            {
+                leaderboardId = leaderboardId,
+                limit = 50
+            };
+            
+            var result = await client.RpcAsync(
+                session,
+                "get_friend_leaderboard",
+                JsonUtility.ToJson(payload)
+            );
+            
+            var response = JsonUtility.FromJson<FriendLeaderboardResponse>(result.Payload);
+            OnFriendLeaderboardLoaded?.Invoke(response.records);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Error loading friend leaderboard: {ex.Message}");
+        }
+    }
+    
+    // Submit score to all leaderboard types
+    public async Task<AggregateScoreResponse> SubmitScore(string gameId, long score)
+    {
+        try
+        {
+            var payload = new ScoreSubmission
+            {
+                gameId = gameId,
+                score = score
+            };
+            
+            var result = await client.RpcAsync(
+                session,
+                "submit_score_with_aggregate",
+                JsonUtility.ToJson(payload)
+            );
+            
+            return JsonUtility.FromJson<AggregateScoreResponse>(result.Payload);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Error submitting score: {ex.Message}");
+            return null;
+        }
+    }
+}
+```
+
+### Usage in Your Game
+
+Here's how to integrate the Social Manager into your game:
+
+```csharp
+public class GameController : MonoBehaviour
+{
+    private SocialManager socialManager;
+    
+    void Start()
+    {
+        socialManager = gameObject.AddComponent<SocialManager>();
+        socialManager.Initialize(nakamaClient, nakamaSession);
+        
+        // Subscribe to events
+        socialManager.OnFriendInviteSent += OnInviteSent;
+        socialManager.OnFriendInviteAccepted += OnInviteAccepted;
+        socialManager.OnNotificationsReceived += OnNotifications;
+        socialManager.OnFriendLeaderboardLoaded += OnLeaderboardLoaded;
+        
+        // Start checking notifications every 30 seconds
+        InvokeRepeating("CheckForNotifications", 0f, 30f);
+    }
+    
+    void CheckForNotifications()
+    {
+        socialManager.CheckNotifications();
+    }
+    
+    void OnInviteSent(FriendInviteResponse response)
+    {
+        Debug.Log($"Friend invite sent: {response.inviteId}");
+        ShowMessage("Friend invite sent!");
+    }
+    
+    void OnInviteAccepted(AcceptInviteResponse response)
+    {
+        Debug.Log($"Now friends with: {response.friendUsername}");
+        ShowMessage($"You are now friends with {response.friendUsername}!");
+    }
+    
+    void OnNotifications(GameNotification[] notifications)
+    {
+        foreach (var notif in notifications)
+        {
+            if (notif.content.type == "friend_invite")
+            {
+                ShowFriendInviteDialog(notif);
+            }
+        }
+    }
+    
+    void OnLeaderboardLoaded(FriendLeaderboardRecord[] records)
+    {
+        UpdateLeaderboardUI(records);
+    }
+    
+    public async void OnGameComplete(long finalScore)
+    {
+        // Submit score and get aggregate
+        var response = await socialManager.SubmitScore(gameId, finalScore);
+        
+        if (response != null && response.success)
+        {
+            ShowScoreScreen(response.individualScore, response.aggregateScore);
+        }
+    }
+}
+```
+
+### Best Practices
+
+1. **Check Notifications Regularly** - Poll every 30-60 seconds for new friend invites
+2. **Cache Friend Leaderboards** - Refresh when needed, don't query on every frame
+3. **Handle Errors Gracefully** - Network issues can occur, always have fallbacks
+4. **Use Events** - Decouple your UI from the social system using events
+5. **Aggregate Scores Wisely** - Only use aggregation when you need global rankings
+
+---
+
 ## Complete Integration Examples
 
 ### Example 1: Complete Game Manager

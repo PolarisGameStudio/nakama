@@ -1726,12 +1726,482 @@ public class SampleGame : MonoBehaviour
 
 ---
 
+## Feature 8: Advanced Social Features
+
+### Friend Leaderboards
+
+Compete with your friends using friend-only leaderboards.
+
+```csharp
+public class FriendLeaderboardManager : MonoBehaviour
+{
+    private NakamaBackend backend;
+    
+    void Start()
+    {
+        backend = NakamaBackend.Instance;
+    }
+    
+    // Get friend leaderboard for current game
+    public async Task<FriendLeaderboardData> GetFriendLeaderboard()
+    {
+        try
+        {
+            var payload = new
+            {
+                leaderboardId = $"leaderboard_{GameConfig.GAME_ID}",
+                limit = 50
+            };
+            
+            var result = await backend.Client.RpcAsync(
+                backend.Session,
+                "get_friend_leaderboard",
+                JsonUtility.ToJson(payload)
+            );
+            
+            return JsonUtility.FromJson<FriendLeaderboardData>(result.Payload);
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Failed to load friend leaderboard: {ex.Message}");
+            return null;
+        }
+    }
+    
+    // Submit score to both regular and friend leaderboards
+    public async Task SubmitScoreWithFriends(long score)
+    {
+        try
+        {
+            var payload = new
+            {
+                gameId = GameConfig.GAME_ID,
+                score = score
+            };
+            
+            var result = await backend.Client.RpcAsync(
+                backend.Session,
+                "submit_score_with_friends_sync",
+                JsonUtility.ToJson(payload)
+            );
+            
+            Debug.Log("Score submitted to friend leaderboards");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Failed to submit score: {ex.Message}");
+        }
+    }
+}
+
+[Serializable]
+public class FriendLeaderboardData
+{
+    public bool success;
+    public FriendRecord[] records;
+    public int totalFriends;
+}
+
+[Serializable]
+public class FriendRecord
+{
+    public string ownerId;
+    public string username;
+    public long score;
+    public int rank;
+}
+```
+
+### Global Power Rank (Score Aggregation)
+
+Track player's total score across all games for a unified ranking.
+
+```csharp
+public class GlobalPowerRankManager : MonoBehaviour
+{
+    private NakamaBackend backend;
+    
+    void Start()
+    {
+        backend = NakamaBackend.Instance;
+    }
+    
+    // Submit score with aggregation
+    public async Task<GlobalPowerData> SubmitScoreWithAggregate(long score)
+    {
+        try
+        {
+            var payload = new
+            {
+                gameId = GameConfig.GAME_ID,
+                score = score
+            };
+            
+            var result = await backend.Client.RpcAsync(
+                backend.Session,
+                "submit_score_with_aggregate",
+                JsonUtility.ToJson(payload)
+            );
+            
+            var response = JsonUtility.FromJson<GlobalPowerData>(result.Payload);
+            
+            // Update UI with both scores
+            UpdatePowerRankUI(response);
+            
+            return response;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Failed to submit aggregate score: {ex.Message}");
+            return null;
+        }
+    }
+    
+    void UpdatePowerRankUI(GlobalPowerData data)
+    {
+        // Show individual game score
+        Debug.Log($"Game Score: {data.individualScore:N0}");
+        
+        // Show total power across all games
+        Debug.Log($"Total Power: {data.aggregateScore:N0}");
+        Debug.Log($"Games Played: {data.leaderboardsProcessed}");
+    }
+}
+
+[Serializable]
+public class GlobalPowerData
+{
+    public bool success;
+    public string gameId;
+    public long individualScore;
+    public long aggregateScore;
+    public int leaderboardsProcessed;
+}
+```
+
+### Friend Invites with Notifications
+
+Send and manage friend invites with automatic notifications.
+
+```csharp
+public class FriendInviteManager : MonoBehaviour
+{
+    private NakamaBackend backend;
+    private const float NOTIFICATION_CHECK_INTERVAL = 30f; // Check every 30 seconds
+    
+    void Start()
+    {
+        backend = NakamaBackend.Instance;
+        InvokeRepeating("CheckForNewInvites", 0f, NOTIFICATION_CHECK_INTERVAL);
+    }
+    
+    // Send friend invite
+    public async Task SendFriendInvite(string targetUserId, string message = "Let's compete!")
+    {
+        try
+        {
+            var payload = new
+            {
+                targetUserId = targetUserId,
+                message = message
+            };
+            
+            var result = await backend.Client.RpcAsync(
+                backend.Session,
+                "send_friend_invite",
+                JsonUtility.ToJson(payload)
+            );
+            
+            var response = JsonUtility.FromJson<FriendInviteResponse>(result.Payload);
+            Debug.Log($"Friend invite sent: {response.inviteId}");
+            ShowNotification("Friend invite sent!");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Failed to send invite: {ex.Message}");
+        }
+    }
+    
+    // Accept friend invite
+    public async Task AcceptFriendInvite(string inviteId)
+    {
+        try
+        {
+            var payload = new { inviteId = inviteId };
+            
+            var result = await backend.Client.RpcAsync(
+                backend.Session,
+                "accept_friend_invite",
+                JsonUtility.ToJson(payload)
+            );
+            
+            var response = JsonUtility.FromJson<AcceptInviteResponse>(result.Payload);
+            Debug.Log($"Now friends with: {response.friendUsername}");
+            ShowNotification($"You're now friends with {response.friendUsername}!");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Failed to accept invite: {ex.Message}");
+        }
+    }
+    
+    // Decline friend invite
+    public async Task DeclineFriendInvite(string inviteId)
+    {
+        try
+        {
+            var payload = new { inviteId = inviteId };
+            
+            await backend.Client.RpcAsync(
+                backend.Session,
+                "decline_friend_invite",
+                JsonUtility.ToJson(payload)
+            );
+            
+            Debug.Log("Friend invite declined");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Failed to decline invite: {ex.Message}");
+        }
+    }
+    
+    // Check for new friend invites
+    async void CheckForNewInvites()
+    {
+        try
+        {
+            var payload = new { limit = 20 };
+            
+            var result = await backend.Client.RpcAsync(
+                backend.Session,
+                "get_notifications",
+                JsonUtility.ToJson(payload)
+            );
+            
+            var response = JsonUtility.FromJson<NotificationsData>(result.Payload);
+            
+            // Process friend invite notifications
+            foreach (var notif in response.notifications)
+            {
+                if (notif.content.type == "friend_invite")
+                {
+                    ShowFriendInvitePopup(notif);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Failed to check notifications: {ex.Message}");
+        }
+    }
+    
+    void ShowFriendInvitePopup(NotificationData notification)
+    {
+        // Show UI popup with accept/decline buttons
+        Debug.Log($"Friend invite from: {notification.content.fromUsername}");
+        Debug.Log($"Invite ID: {notification.content.inviteId}");
+        
+        // In your UI code:
+        // OnAcceptClick -> AcceptFriendInvite(notification.content.inviteId)
+        // OnDeclineClick -> DeclineFriendInvite(notification.content.inviteId)
+    }
+}
+
+[Serializable]
+public class FriendInviteResponse
+{
+    public bool success;
+    public string inviteId;
+    public string targetUserId;
+    public string status;
+}
+
+[Serializable]
+public class AcceptInviteResponse
+{
+    public bool success;
+    public string inviteId;
+    public string friendUserId;
+    public string friendUsername;
+}
+
+[Serializable]
+public class NotificationsData
+{
+    public bool success;
+    public NotificationData[] notifications;
+    public int count;
+}
+
+[Serializable]
+public class NotificationData
+{
+    public string id;
+    public string subject;
+    public NotificationContent content;
+    public int code;
+    public string senderId;
+    public string createTime;
+}
+
+[Serializable]
+public class NotificationContent
+{
+    public string type;
+    public string fromUsername;
+    public string inviteId;
+}
+```
+
+### Complete Social Features Integration
+
+Here's a complete example integrating all social features:
+
+```csharp
+public class SocialGameController : MonoBehaviour
+{
+    [Header("Managers")]
+    public FriendLeaderboardManager friendLeaderboards;
+    public GlobalPowerRankManager powerRank;
+    public FriendInviteManager invites;
+    
+    [Header("UI")]
+    public Text powerRankText;
+    public Text gameScoreText;
+    public Transform friendLeaderboardContainer;
+    public GameObject friendInvitePopupPrefab;
+    
+    async void Start()
+    {
+        // Initialize Nakama
+        await NakamaBackend.Instance.Initialize();
+        
+        // Load friend leaderboard
+        await LoadFriendLeaderboard();
+        
+        // Subscribe to invite events
+        invites.OnInviteReceived += ShowInviteDialog;
+    }
+    
+    // Called when player completes a game
+    public async void OnGameComplete(long finalScore)
+    {
+        // Submit score to all leaderboards including friends
+        await friendLeaderboards.SubmitScoreWithFriends(finalScore);
+        
+        // Get aggregate power rank
+        var powerData = await powerRank.SubmitScoreWithAggregate(finalScore);
+        
+        if (powerData != null)
+        {
+            // Update UI
+            gameScoreText.text = $"Game Score: {powerData.individualScore:N0}";
+            powerRankText.text = $"Power Rank: {powerData.aggregateScore:N0}";
+            
+            // Refresh friend leaderboard
+            await LoadFriendLeaderboard();
+        }
+    }
+    
+    async Task LoadFriendLeaderboard()
+    {
+        var leaderboard = await friendLeaderboards.GetFriendLeaderboard();
+        
+        if (leaderboard != null && leaderboard.success)
+        {
+            UpdateFriendLeaderboardUI(leaderboard.records);
+        }
+    }
+    
+    void UpdateFriendLeaderboardUI(FriendRecord[] records)
+    {
+        // Clear existing entries
+        foreach (Transform child in friendLeaderboardContainer)
+        {
+            Destroy(child.gameObject);
+        }
+        
+        // Add friend entries
+        foreach (var record in records)
+        {
+            var entry = Instantiate(leaderboardEntryPrefab, friendLeaderboardContainer);
+            entry.GetComponent<LeaderboardEntry>().Setup(
+                record.rank,
+                record.username,
+                record.score
+            );
+        }
+    }
+    
+    void ShowInviteDialog(NotificationData invite)
+    {
+        var popup = Instantiate(friendInvitePopupPrefab);
+        popup.GetComponent<FriendInvitePopup>().Setup(
+            invite.content.fromUsername,
+            invite.content.inviteId,
+            invites
+        );
+    }
+    
+    // UI Button handlers
+    public void OnSendInviteClick(string friendUserId)
+    {
+        invites.SendFriendInvite(friendUserId, "Let's compete in the leaderboards!");
+    }
+}
+```
+
+### Friend Invite Popup UI Example
+
+```csharp
+public class FriendInvitePopup : MonoBehaviour
+{
+    [Header("UI")]
+    public Text messageText;
+    public Button acceptButton;
+    public Button declineButton;
+    
+    private string inviteId;
+    private FriendInviteManager inviteManager;
+    
+    public void Setup(string fromUsername, string inviteId, FriendInviteManager manager)
+    {
+        this.inviteId = inviteId;
+        this.inviteManager = manager;
+        
+        messageText.text = $"{fromUsername} wants to be your friend!";
+        
+        acceptButton.onClick.AddListener(OnAcceptClick);
+        declineButton.onClick.AddListener(OnDeclineClick);
+    }
+    
+    async void OnAcceptClick()
+    {
+        await inviteManager.AcceptFriendInvite(inviteId);
+        Destroy(gameObject);
+    }
+    
+    async void OnDeclineClick()
+    {
+        await inviteManager.DeclineFriendInvite(inviteId);
+        Destroy(gameObject);
+    }
+}
+```
+
+---
+
 ## Summary: All Features Available
 
 | Feature | Status | Description |
 |---------|--------|-------------|
 | **Automated Leaderboards** | ✅ | Daily/Weekly/Monthly/All-Time with cron resets |
 | **Smart Score Submission** | ✅ | One call updates all 8 leaderboards |
+| **Friend Leaderboards** | ✅ | Compete only with your friends |
+| **Global Power Rank** | ✅ | Aggregate score across all games |
+| **Friend Invites** | ✅ | Send/accept/decline with notifications |
+| **Social Notifications** | ✅ | Real-time friend activity updates |
 | **Groups/Clans/Guilds** | ✅ | Roles, shared wallets, XP system, chat |
 | **Seasonal Tournaments** | ✅ | Built-in Nakama tournaments with prizes |
 | **Battle System** | ✅ | 1v1, 2v2, 3v3, 4v4 matchmaking |
@@ -1758,5 +2228,5 @@ All features are production-ready and fully documented!
 ---
 
 **Last Updated**: 2025-11-14  
-**Version**: 2.0  
-**Total RPCs**: 27 (24 new + 3 wallet mapping)
+**Version**: 2.1  
+**Total RPCs**: 33 (9 copilot social + 24 existing + 3 wallet mapping)

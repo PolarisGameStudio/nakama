@@ -18,10 +18,20 @@ This module provides comprehensive Nakama RPCs for dynamic leaderboard managemen
 
 ## Implementation Details
 
-### File Location
-`/data/modules/leaderboard_rpc.ts`
+### File Locations
+Social features are implemented as modular JavaScript in `/data/modules/copilot/`:
+- `leaderboard_sync.js` - Score synchronization
+- `leaderboard_aggregate.js` - Score aggregation
+- `leaderboard_friends.js` - Friend leaderboards
+- `social_features.js` - Friend invites and notifications
+- `index.js` - Module initialization
 
-### RPC Endpoint
+Legacy leaderboard creation: `/data/modules/leaderboards.lua`
+
+### Module Architecture
+The copilot module is automatically loaded when Nakama starts. All RPCs are registered through the parent `index.js` which imports and initializes all copilot modules.
+
+### RPC Endpoints
 `create_all_leaderboards_persistent`
 
 ### Available RPCs
