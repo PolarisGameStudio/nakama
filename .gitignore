@@ -257,8 +257,6 @@ jspm_packages/
 .yarn-integrity
 
 # dotenv environment variables file
-.env
-.env.test
 .env*.local
 
 # parcel-bundler cache (https://parceljs.org/)
@@ -719,3 +717,4 @@ MigrationBackup/
 
 # TypeScript build output
 data/modules/build/
+config.bat
