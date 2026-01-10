@@ -255,6 +255,53 @@ function rpcCricketSubmitScore(ctx, logger, nk, payload) {
 }
 
 // ============================================================================
+// Helper: Get user profile data including profile picture
+// ============================================================================
+function getUserProfileData(nk, logger, userId) {
+    let profilePicture = null;
+    let displayName = null;
+    
+    try {
+        const users = nk.usersGetId([userId]);
+        if (users && users.length > 0) {
+            const user = users[0];
+            displayName = user.displayName || user.username || null;
+            profilePicture = user.avatarUrl || null;
+            
+            // Check metadata if no avatar_url
+            if (!profilePicture && user.metadata) {
+                try {
+                    const metadata = typeof user.metadata === 'string' 
+                        ? JSON.parse(user.metadata) 
+                        : user.metadata;
+                    profilePicture = metadata.profilePicture || null;
+                } catch (e) { /* ignore */ }
+            }
+        }
+    } catch (e) {
+        // ignore
+    }
+    
+    return { profilePicture, displayName };
+}
+
+// ============================================================================
+// Helper: Enrich leaderboard records with profile pictures
+// ============================================================================
+function enrichRecordsWithProfiles(nk, logger, records) {
+    if (!records || records.length === 0) return [];
+    
+    return records.map(record => {
+        const profile = getUserProfileData(nk, logger, record.ownerId);
+        return {
+            ...record,
+            displayName: profile.displayName || record.username?.value || record.username || "Anonymous",
+            profilePicture: profile.profilePicture
+        };
+    });
+}
+
+// ============================================================================
 // RPC: Get All Leaderboards
 // ============================================================================
 function rpcCricketGetAllLeaderboards(ctx, logger, nk, payload) {
@@ -272,9 +319,13 @@ function rpcCricketGetAllLeaderboards(ctx, logger, nk, payload) {
     // Daily leaderboard
     try {
         const daily = nk.leaderboardRecordsList(LEADERBOARDS.daily, [userId], limit, "", 0);
+        const enrichedRecords = enrichRecordsWithProfiles(nk, logger, daily.records || []);
+        const enrichedOwnerRecord = (daily.ownerRecords && daily.ownerRecords.length > 0) 
+            ? enrichRecordsWithProfiles(nk, logger, [daily.ownerRecords[0]])[0] 
+            : null;
         result.daily = {
-            records: daily.records || [],
-            ownerRecord: (daily.ownerRecords && daily.ownerRecords.length > 0) ? daily.ownerRecords[0] : null
+            records: enrichedRecords,
+            ownerRecord: enrichedOwnerRecord
         };
     } catch (e) {
         result.daily = { records: [], ownerRecord: null };
@@ -283,9 +334,13 @@ function rpcCricketGetAllLeaderboards(ctx, logger, nk, payload) {
     // Weekly leaderboard
     try {
         const weekly = nk.leaderboardRecordsList(LEADERBOARDS.weekly, [userId], limit, "", 0);
+        const enrichedRecords = enrichRecordsWithProfiles(nk, logger, weekly.records || []);
+        const enrichedOwnerRecord = (weekly.ownerRecords && weekly.ownerRecords.length > 0) 
+            ? enrichRecordsWithProfiles(nk, logger, [weekly.ownerRecords[0]])[0] 
+            : null;
         result.weekly = {
-            records: weekly.records || [],
-            ownerRecord: (weekly.ownerRecords && weekly.ownerRecords.length > 0) ? weekly.ownerRecords[0] : null
+            records: enrichedRecords,
+            ownerRecord: enrichedOwnerRecord
         };
     } catch (e) {
         result.weekly = { records: [], ownerRecord: null };
@@ -294,9 +349,13 @@ function rpcCricketGetAllLeaderboards(ctx, logger, nk, payload) {
     // All-time leaderboard
     try {
         const allTime = nk.leaderboardRecordsList(LEADERBOARDS.allTime, [userId], limit, "", 0);
+        const enrichedRecords = enrichRecordsWithProfiles(nk, logger, allTime.records || []);
+        const enrichedOwnerRecord = (allTime.ownerRecords && allTime.ownerRecords.length > 0) 
+            ? enrichRecordsWithProfiles(nk, logger, [allTime.ownerRecords[0]])[0] 
+            : null;
         result.allTime = {
-            records: allTime.records || [],
-            ownerRecord: (allTime.ownerRecords && allTime.ownerRecords.length > 0) ? allTime.ownerRecords[0] : null
+            records: enrichedRecords,
+            ownerRecord: enrichedOwnerRecord
         };
     } catch (e) {
         result.allTime = { records: [], ownerRecord: null };
@@ -305,9 +364,13 @@ function rpcCricketGetAllLeaderboards(ctx, logger, nk, payload) {
     // Trivia leaderboard
     try {
         const trivia = nk.leaderboardRecordsList(LEADERBOARDS.trivia, [userId], limit, "", 0);
+        const enrichedRecords = enrichRecordsWithProfiles(nk, logger, trivia.records || []);
+        const enrichedOwnerRecord = (trivia.ownerRecords && trivia.ownerRecords.length > 0) 
+            ? enrichRecordsWithProfiles(nk, logger, [trivia.ownerRecords[0]])[0] 
+            : null;
         result.trivia = {
-            records: trivia.records || [],
-            ownerRecord: (trivia.ownerRecords && trivia.ownerRecords.length > 0) ? trivia.ownerRecords[0] : null
+            records: enrichedRecords,
+            ownerRecord: enrichedOwnerRecord
         };
     } catch (e) {
         result.trivia = { records: [], ownerRecord: null };

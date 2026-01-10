@@ -378,6 +378,53 @@ function rpcGetPrediction(ctx, logger, nk, payload) {
 }
 
 /**
+ * Helper: Get user profile data including profile picture
+ */
+function getUserProfileData(nk, logger, userId) {
+    let profilePicture = null;
+    let displayName = null;
+    
+    try {
+        const users = nk.usersGetId([userId]);
+        if (users && users.length > 0) {
+            const user = users[0];
+            displayName = user.displayName || user.username || null;
+            profilePicture = user.avatarUrl || null;
+            
+            // Check metadata if no avatar_url
+            if (!profilePicture && user.metadata) {
+                try {
+                    const metadata = typeof user.metadata === 'string' 
+                        ? JSON.parse(user.metadata) 
+                        : user.metadata;
+                    profilePicture = metadata.profilePicture || null;
+                } catch (e) { /* ignore */ }
+            }
+        }
+    } catch (e) {
+        // ignore
+    }
+    
+    return { profilePicture, displayName };
+}
+
+/**
+ * Enrich leaderboard records with profile pictures
+ */
+function enrichRecordsWithProfiles(nk, logger, records) {
+    if (!records || records.length === 0) return [];
+    
+    return records.map(record => {
+        const profile = getUserProfileData(nk, logger, record.ownerId);
+        return {
+            ...record,
+            displayName: profile.displayName || record.username?.value || record.username || "Anonymous",
+            profilePicture: profile.profilePicture
+        };
+    });
+}
+
+/**
  * Get prediction leaderboard
  */
 function rpcGetPredictionLeaderboard(ctx, logger, nk, payload) {
@@ -392,6 +439,9 @@ function rpcGetPredictionLeaderboard(ctx, logger, nk, payload) {
         0
     );
 
+    // Enrich records with profile pictures
+    const enrichedRecords = enrichRecordsWithProfiles(nk, logger, records.records || []);
+
     // Get user's own record
     const userId = ctx.userId;
     let userRecord = null;
@@ -405,11 +455,12 @@ function rpcGetPredictionLeaderboard(ctx, logger, nk, payload) {
     );
 
     if (userRecords.records && userRecords.records.length > 0) {
-        userRecord = userRecords.records[0];
+        const enrichedUserRecords = enrichRecordsWithProfiles(nk, logger, userRecords.records);
+        userRecord = enrichedUserRecords[0];
     }
 
     return JSON.stringify({
-        records: records.records || [],
+        records: enrichedRecords,
         nextCursor: records.nextCursor || '',
         userRecord
     });

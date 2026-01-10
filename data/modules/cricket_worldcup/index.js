@@ -181,7 +181,83 @@ function rpcCricketGetPredictions(ctx, logger, nk, payload) {
 }
 
 // ============================================================================
-// RPC: Get Prediction Leaderboard
+// HELPER: Get User Profile Data (Profile Picture + Display Name)
+// ============================================================================
+function getUserProfileData(nk, logger, userId) {
+    let profilePicture = null;
+    let displayName = null;
+    
+    try {
+        const users = nk.usersGetId([userId]);
+        if (users && users.length > 0) {
+            const user = users[0];
+            displayName = user.displayName || user.username || null;
+            
+            // Primary: Use avatarUrl (synced from UserManagement)
+            if (user.avatarUrl) {
+                profilePicture = user.avatarUrl;
+            }
+            
+            // Fallback: Check user metadata
+            if (!profilePicture && user.metadata) {
+                try {
+                    const metadata = typeof user.metadata === 'string' 
+                        ? JSON.parse(user.metadata) 
+                        : user.metadata;
+                    profilePicture = metadata.profilePicture || null;
+                } catch (e) {
+                    // Metadata parse failed, ignore
+                }
+            }
+        }
+    } catch (e) {
+        logger.warn(`[CricketWorldCup] Failed to get profile for ${userId}: ${e.message}`);
+    }
+    
+    return { profilePicture, displayName };
+}
+
+// ============================================================================
+// HELPER: Enrich Leaderboard Records with Profile Pictures
+// ============================================================================
+function enrichLeaderboardRecords(nk, logger, records) {
+    if (!records || records.length === 0) {
+        return [];
+    }
+    
+    return records.map(record => {
+        const profileData = getUserProfileData(nk, logger, record.ownerId);
+        
+        // Parse metadata if it's a string
+        let parsedMetadata = null;
+        if (record.metadata) {
+            try {
+                parsedMetadata = typeof record.metadata === 'string' 
+                    ? JSON.parse(record.metadata) 
+                    : record.metadata;
+            } catch (e) {
+                parsedMetadata = null;
+            }
+        }
+        
+        return {
+            rank: record.rank,
+            userId: record.ownerId,
+            username: record.username?.value || record.username || "Anonymous",
+            displayName: profileData.displayName || record.username?.value || record.username || "Anonymous",
+            score: record.score,
+            subscore: record.subscore,
+            numScore: record.numScore,
+            metadata: parsedMetadata,
+            updateTime: record.updateTime,
+            // Profile Picture - THE KEY ADDITION
+            profilePicture: profileData.profilePicture
+        };
+    });
+}
+
+// ============================================================================
+// RPC: Get Prediction Leaderboard (with Profile Pictures)
 // ============================================================================
 function rpcCricketGetLeaderboard(ctx, logger, nk, payload) {
     let limit = 100;
@@ -220,10 +296,14 @@ function rpcCricketGetLeaderboard(ctx, logger, nk, payload) {
             0
         );
         
+        // Enrich with profile pictures
+        const enrichedRecords = enrichLeaderboardRecords(nk, logger, records.records || []);
+        const enrichedOwnerRecords = enrichLeaderboardRecords(nk, logger, records.ownerRecords || []);
+        
         return JSON.stringify({
             success: true,
-            leaderboard: records.records || [],
-            ownerRecords: records.ownerRecords || [],
+            leaderboard: enrichedRecords,
+            ownerRecords: enrichedOwnerRecords,
         });
     } catch (e) {
         return JSON.stringify({ success: false, error: e.message });

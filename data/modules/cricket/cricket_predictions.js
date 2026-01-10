@@ -367,6 +367,37 @@ function rpcGetUserPredictions(context, logger, nk, payload) {
 }
 
 /**
+ * Helper: Get user profile data including profile picture
+ */
+function getUserProfileData(nk, logger, userId) {
+    let profilePicture = null;
+    let displayName = null;
+    
+    try {
+        const users = nk.usersGetId([userId]);
+        if (users && users.length > 0) {
+            const user = users[0];
+            displayName = user.displayName || user.username || null;
+            profilePicture = user.avatarUrl || null;
+            
+            // Check metadata if no avatar_url
+            if (!profilePicture && user.metadata) {
+                try {
+                    const metadata = typeof user.metadata === 'string' 
+                        ? JSON.parse(user.metadata) 
+                        : user.metadata;
+                    profilePicture = metadata.profilePicture || null;
+                } catch (e) { /* ignore */ }
+            }
+        }
+    } catch (e) {
+        // ignore
+    }
+    
+    return { profilePicture, displayName };
+}
+
+/**
  * RPC: Get match leaderboard
  */
 function rpcGetMatchLeaderboard(context, logger, nk, payload) {
@@ -388,13 +419,18 @@ function rpcGetMatchLeaderboard(context, logger, nk, payload) {
     const results = nk.storageIndexList("cricket_predictions_idx", query, limit, null, null);
 
     const entries = (results?.objects || [])
-        .map(obj => ({
-            userId: obj.userId,
-            username: getUserDisplayName(nk, obj.userId),
-            predictedWinner: obj.value.predictedWinner,
-            points: obj.value.pointsEarned,
-            bonuses: obj.value.bonuses
-        }))
+        .map(obj => {
+            const profile = getUserProfileData(nk, logger, obj.userId);
+            return {
+                userId: obj.userId,
+                username: getUserDisplayName(nk, obj.userId),
+                displayName: profile.displayName || getUserDisplayName(nk, obj.userId),
+                profilePicture: profile.profilePicture,
+                predictedWinner: obj.value.predictedWinner,
+                points: obj.value.pointsEarned,
+                bonuses: obj.value.bonuses
+            };
+        })
         .sort((a, b) => b.points - a.points)
         .map((entry, idx) => ({ ...entry, rank: idx + 1 }));
 
@@ -435,13 +471,18 @@ function rpcGetTournamentLeaderboard(context, logger, nk, payload) {
     // Get leaderboard records
     const records = nk.leaderboardRecordsList(leaderboardId, null, limit, null, 0);
     
-    const entries = (records.records || []).map(record => ({
-        rank: record.rank,
-        userId: record.ownerId,
-        username: record.username?.value || "Anonymous",
-        score: record.score,
-        metadata: record.metadata ? JSON.parse(record.metadata) : null
-    }));
+    const entries = (records.records || []).map(record => {
+        const profile = getUserProfileData(nk, logger, record.ownerId);
+        return {
+            rank: record.rank,
+            userId: record.ownerId,
+            username: record.username?.value || "Anonymous",
+            displayName: profile.displayName || record.username?.value || "Anonymous",
+            profilePicture: profile.profilePicture,
+            score: record.score,
+            metadata: record.metadata ? JSON.parse(record.metadata) : null
+        };
+    });
 
     // Get user's own rank
     let userRank = null;
