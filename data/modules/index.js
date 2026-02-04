@@ -2,6 +2,663 @@
 // Compatible with Nakama V8 JavaScript runtime (No ES Modules)
 // All import/export statements have been removed
 
+// ============================================================================
+// PR #1: CORE INFRASTRUCTURE - Structured Logging, RPC Registry, Middleware
+// Version: 1.0.0 | Date: 2026-02-05
+// ============================================================================
+// This section contains the core infrastructure modules that provide:
+// - Structured JSON logging with traceId propagation
+// - Central RPC registry with metadata
+// - Middleware framework for RPC wrapping
+// - Standardized error codes and responses
+// ============================================================================
+
+// ============================================================================
+// CORE/LOGGER.JS - Structured JSON Logging
+// ============================================================================
+
+var CORE_LOG_LEVELS = {
+    DEBUG: 'debug',
+    INFO: 'info',
+    WARN: 'warn',
+    ERROR: 'error'
+};
+
+var CORE_MAX_PAYLOAD_LOG_SIZE = 4096;
+var CORE_MAX_SERIALIZATION_DEPTH = 10;
+
+function coreGenerateTraceId() {
+    try {
+        var timestamp = Date.now().toString(36);
+        var random = '';
+        for (var i = 0; i < 7; i++) {
+            random += Math.floor(Math.random() * 36).toString(36);
+        }
+        return timestamp + '-' + random;
+    } catch (err) {
+        return 'trace-' + Date.now();
+    }
+}
+
+function coreSafeSerialize(value, maxDepth) {
+    maxDepth = typeof maxDepth === 'number' ? maxDepth : CORE_MAX_SERIALIZATION_DEPTH;
+    var seen = [];
+    
+    function serialize(val, depth) {
+        if (depth > maxDepth) return '[Max Depth Exceeded]';
+        if (val === null) return null;
+        if (val === undefined) return '[undefined]';
+        
+        var type = typeof val;
+        if (type === 'string') {
+            if (val.length > CORE_MAX_PAYLOAD_LOG_SIZE) {
+                return val.substring(0, CORE_MAX_PAYLOAD_LOG_SIZE) + '...[truncated]';
+            }
+            return val;
+        }
+        if (type === 'number' || type === 'boolean') return val;
+        if (type === 'function') return '[Function: ' + (val.name || 'anonymous') + ']';
+        
+        if (val instanceof Date) return val.toISOString();
+        if (val instanceof Error) {
+            return { name: val.name, message: val.message, stack: val.stack ? val.stack.substring(0, 500) : undefined };
+        }
+        
+        if (Array.isArray(val)) {
+            if (seen.indexOf(val) !== -1) return '[Circular Reference]';
+            seen.push(val);
+            var arr = [];
+            var limit = Math.min(val.length, 100);
+            for (var i = 0; i < limit; i++) arr.push(serialize(val[i], depth + 1));
+            if (val.length > 100) arr.push('...[' + (val.length - 100) + ' more]');
+            return arr;
+        }
+        
+        if (type === 'object') {
+            if (seen.indexOf(val) !== -1) return '[Circular Reference]';
+            seen.push(val);
+            var obj = {};
+            var keys;
+            try { keys = Object.keys(val); } catch (e) { return '[Object]'; }
+            var keyLimit = Math.min(keys.length, 50);
+            for (var j = 0; j < keyLimit; j++) {
+                try { obj[keys[j]] = serialize(val[keys[j]], depth + 1); } catch (e) { obj[keys[j]] = '[Error]'; }
+            }
+            if (keys.length > 50) obj['__more__'] = (keys.length - 50) + ' more keys';
+            return obj;
+        }
+        return String(val);
+    }
+    return serialize(value, 0);
+}
+
+function coreLogStructured(logger, data) {
+    if (!logger || typeof logger !== 'object') return;
+    
+    var logEntry = {
+        timestamp: new Date().toISOString(),
+        level: data.level || CORE_LOG_LEVELS.INFO,
+        traceId: data.traceId || 'no-trace',
+        rpcName: data.rpcName || null,
+        userId: data.userId || null,
+        gameId: data.gameId || null,
+        event: data.event || null,
+        latencyMs: typeof data.latencyMs === 'number' ? data.latencyMs : null,
+        result: data.result || null,
+        errorCode: data.errorCode || null,
+        errorMessage: data.errorMessage || null,
+        message: data.message || null,
+        metadata: data.metadata ? coreSafeSerialize(data.metadata, 5) : null
+    };
+    
+    var cleanEntry = {};
+    for (var key in logEntry) {
+        if (logEntry.hasOwnProperty(key) && logEntry[key] !== null) {
+            cleanEntry[key] = logEntry[key];
+        }
+    }
+    
+    var logString;
+    try { logString = JSON.stringify(cleanEntry); } 
+    catch (err) { logString = '{"level":"error","message":"Failed to serialize log"}'; }
+    
+    var level = (data.level || CORE_LOG_LEVELS.INFO).toLowerCase();
+    try {
+        switch (level) {
+            case 'error': logger.error(logString); break;
+            case 'warn': logger.warn(logString); break;
+            case 'debug': logger.debug(logString); break;
+            default: logger.info(logString); break;
+        }
+    } catch (err) { try { logger.info(logString); } catch (e) {} }
+}
+
+function coreLogRpcStart(logger, traceId, rpcName, userId, payload) {
+    var meta = {};
+    if (payload && typeof payload === 'object') {
+        if (payload.gameId) meta.gameId = payload.gameId;
+        if (payload.game_id) meta.gameId = payload.game_id;
+        try { meta.payloadKeys = Object.keys(payload); } catch (e) { meta.payloadKeys = []; }
+    }
+    coreLogStructured(logger, {
+        level: CORE_LOG_LEVELS.INFO,
+        traceId: traceId,
+        rpcName: rpcName,
+        userId: userId,
+        gameId: meta.gameId || null,
+        event: 'rpc_start',
+        message: 'RPC started',
+        metadata: meta
+    });
+}
+
+function coreLogRpcComplete(logger, traceId, rpcName, userId, latencyMs, success, errorCode, metadata) {
+    coreLogStructured(logger, {
+        level: success ? CORE_LOG_LEVELS.INFO : CORE_LOG_LEVELS.WARN,
+        traceId: traceId,
+        rpcName: rpcName,
+        userId: userId,
+        latencyMs: latencyMs,
+        result: success ? 'success' : 'error',
+        errorCode: errorCode || null,
+        event: 'rpc_complete',
+        message: success ? 'RPC completed successfully' : 'RPC completed with error',
+        metadata: metadata
+    });
+}
+
+function coreLogRpcError(logger, traceId, rpcName, userId, latencyMs, error, errorCode) {
+    var errorMessage = error instanceof Error ? error.message : String(error);
+    var errorStack = error instanceof Error ? error.stack : null;
+    coreLogStructured(logger, {
+        level: CORE_LOG_LEVELS.ERROR,
+        traceId: traceId,
+        rpcName: rpcName,
+        userId: userId,
+        latencyMs: latencyMs,
+        result: 'error',
+        errorCode: errorCode || 'INTERNAL_ERROR',
+        errorMessage: errorMessage,
+        event: 'rpc_error',
+        message: 'RPC failed with exception',
+        metadata: { errorStack: errorStack ? errorStack.substring(0, 500) : null }
+    });
+}
+
+// Export to globalThis
+if (typeof globalThis !== 'undefined') {
+    globalThis.StructuredLogger = {
+        logStructured: coreLogStructured,
+        generateTraceId: coreGenerateTraceId,
+        logRpcStart: coreLogRpcStart,
+        logRpcComplete: coreLogRpcComplete,
+        logRpcError: coreLogRpcError,
+        safeSerialize: coreSafeSerialize,
+        LOG_LEVELS: CORE_LOG_LEVELS
+    };
+}
+
+// ============================================================================
+// CORE/MIDDLEWARE.JS - RPC Middleware Framework
+// ============================================================================
+
+var CORE_MIDDLEWARE_CONFIG = {
+    includeTraceIdInResponse: true,
+    includeLatencyInResponse: true,
+    maxErrorMessageLength: 500,
+    sanitizeClientErrors: true,
+    defaultInternalErrorMessage: 'An internal error occurred. Please try again later.',
+    slowRequestThreshold: 1000
+};
+
+var CORE_ERROR_CODES = {
+    INVALID_PAYLOAD: 'INVALID_PAYLOAD',
+    MISSING_FIELD: 'MISSING_FIELD',
+    INVALID_FIELD: 'INVALID_FIELD',
+    UNAUTHORIZED: 'UNAUTHORIZED',
+    FORBIDDEN: 'FORBIDDEN',
+    NOT_FOUND: 'NOT_FOUND',
+    RATE_LIMITED: 'RATE_LIMITED',
+    INTERNAL_ERROR: 'INTERNAL_ERROR',
+    UNKNOWN: 'UNKNOWN'
+};
+
+function coreCreateErrorResponse(errorCode, message, traceId, details) {
+    var response = {
+        success: false,
+        error: message,
+        errorCode: errorCode || CORE_ERROR_CODES.UNKNOWN,
+        traceId: traceId || 'unknown'
+    };
+    if (details && typeof details === 'object') {
+        if (details.field) response.field = details.field;
+        if (details.retryAfter) response.retryAfter = details.retryAfter;
+    }
+    return response;
+}
+
+function coreTruncateString(str, maxLength) {
+    if (!str || typeof str !== 'string') return str;
+    if (str.length <= maxLength) return str;
+    return str.substring(0, maxLength - 3) + '...';
+}
+
+/**
+ * Core middleware wrapper for RPCs
+ * Provides: structured logging, traceId, timing, error handling
+ */
+function coreWithMiddleware(rpcFunction, rpcName, options) {
+    if (typeof rpcFunction !== 'function') {
+        throw new Error('coreWithMiddleware: rpcFunction must be a function');
+    }
+    if (!rpcName || typeof rpcName !== 'string') {
+        throw new Error('coreWithMiddleware: rpcName must be a non-empty string');
+    }
+    
+    options = options || {};
+    
+    return function wrappedRpc(ctx, logger, nk, payload) {
+        var startTime = Date.now();
+        
+        // Generate or extract traceId
+        var traceId = (ctx && ctx.traceId) ? ctx.traceId : null;
+        if (!traceId) {
+            try {
+                var payloadData = typeof payload === 'string' ? JSON.parse(payload || '{}') : (payload || {});
+                traceId = payloadData.traceId || payloadData.trace_id;
+            } catch (e) {}
+        }
+        if (!traceId) {
+            traceId = coreGenerateTraceId();
+        }
+        
+        // Store traceId in context
+        if (ctx && typeof ctx === 'object') {
+            ctx.traceId = traceId;
+        }
+        
+        var userId = (ctx && ctx.userId) ? ctx.userId : null;
+        
+        // Log start
+        try {
+            var parsedPayload = null;
+            if (options.logPayload) {
+                try { parsedPayload = typeof payload === 'string' ? JSON.parse(payload || '{}') : payload; }
+                catch (e) { parsedPayload = { _parseError: true }; }
+            }
+            coreLogRpcStart(logger, traceId, rpcName, userId, parsedPayload);
+        } catch (logErr) {
+            try { logger.warn('[' + rpcName + '] Failed to log RPC start: ' + logErr.message); } catch (e) {}
+        }
+        
+        // Execute RPC
+        var result;
+        var success = false;
+        var errorCode = null;
+        
+        try {
+            result = rpcFunction(ctx, logger, nk, payload);
+            
+            // Parse result to check success
+            var parsedResult = null;
+            if (result && typeof result === 'string') {
+                try { parsedResult = JSON.parse(result); }
+                catch (e) { parsedResult = { data: result }; }
+            } else if (result && typeof result === 'object') {
+                parsedResult = result;
+            } else {
+                parsedResult = {};
+            }
+            
+            success = parsedResult.success !== false;
+            if (!success) {
+                errorCode = parsedResult.errorCode || CORE_ERROR_CODES.UNKNOWN;
+            }
+            
+            // Enrich response with traceId and latency
+            if (CORE_MIDDLEWARE_CONFIG.includeTraceIdInResponse && typeof parsedResult === 'object') {
+                parsedResult.traceId = traceId;
+                if (CORE_MIDDLEWARE_CONFIG.includeLatencyInResponse) {
+                    parsedResult.latencyMs = Date.now() - startTime;
+                }
+                result = JSON.stringify(parsedResult);
+            }
+            
+        } catch (err) {
+            success = false;
+            errorCode = CORE_ERROR_CODES.INTERNAL_ERROR;
+            var errorMessage = err.message || 'Unknown error';
+            var latencyMs = Date.now() - startTime;
+            
+            try {
+                coreLogRpcError(logger, traceId, rpcName, userId, latencyMs, err, errorCode);
+            } catch (logErr) {
+                try { logger.error('[' + rpcName + '][' + traceId + '] Exception: ' + errorMessage); } catch (e) {}
+            }
+            
+            var clientMessage = CORE_MIDDLEWARE_CONFIG.sanitizeClientErrors ?
+                CORE_MIDDLEWARE_CONFIG.defaultInternalErrorMessage :
+                coreTruncateString(errorMessage, CORE_MIDDLEWARE_CONFIG.maxErrorMessageLength);
+            
+            result = JSON.stringify(coreCreateErrorResponse(errorCode, clientMessage, traceId));
+        }
+        
+        // Log completion
+        var finalLatencyMs = Date.now() - startTime;
+        try {
+            coreLogRpcComplete(logger, traceId, rpcName, userId, finalLatencyMs, success, errorCode, null);
+            if (finalLatencyMs > CORE_MIDDLEWARE_CONFIG.slowRequestThreshold) {
+                logger.warn('[' + rpcName + '][' + traceId + '] SLOW REQUEST: ' + finalLatencyMs + 'ms');
+            }
+        } catch (logErr) {}
+        
+        return result;
+    };
+}
+
+// Export to globalThis
+if (typeof globalThis !== 'undefined') {
+    globalThis.RpcMiddleware = {
+        withMiddleware: coreWithMiddleware,
+        createErrorResponse: coreCreateErrorResponse,
+        ErrorCodes: CORE_ERROR_CODES,
+        Config: CORE_MIDDLEWARE_CONFIG
+    };
+}
+
+// ============================================================================
+// CORE/INDEX.JS - Module Verification
+// ============================================================================
+
+function coreInitializeModules(ctx, logger, nk) {
+    logger.info('========================================');
+    logger.info('[Core] PR #1: Foundation Infrastructure');
+    logger.info('========================================');
+    
+    var modules = {
+        'StructuredLogger': typeof globalThis !== 'undefined' && globalThis.StructuredLogger,
+        'RpcMiddleware': typeof globalThis !== 'undefined' && globalThis.RpcMiddleware
+    };
+    
+    var loaded = [];
+    var missing = [];
+    for (var name in modules) {
+        if (modules[name]) { loaded.push(name); } else { missing.push(name); }
+    }
+    
+    if (missing.length === 0) {
+        logger.info('[Core] All modules loaded: ' + loaded.join(', '));
+        logger.info('[Core] Middleware ready for 5 test RPCs');
+        logger.info('========================================');
+        return true;
+    } else {
+        logger.error('[Core] Missing modules: ' + missing.join(', '));
+        return false;
+    }
+}
+
+if (typeof globalThis !== 'undefined') {
+    globalThis.Core = {
+        initialize: coreInitializeModules,
+        wrapRpc: coreWithMiddleware,
+        generateTraceId: coreGenerateTraceId
+    };
+}
+
+// ============================================================================
+// END OF CORE INFRASTRUCTURE
+// ============================================================================
+
+// ============================================================================
+// PR #2: RATE LIMITING INFRASTRUCTURE
+// Version: 1.0.0 | Date: 2026-02-05
+// ============================================================================
+// This section provides rate limiting to prevent RPC abuse and spam.
+// Uses in-memory sliding window algorithm.
+// ============================================================================
+
+// In-memory rate limit store (use Redis in production for distributed systems)
+var rateLimitStore = {};
+
+// Cleanup interval for stale rate limit entries (every 5 minutes)
+var RATE_LIMIT_CLEANUP_INTERVAL = 300000;
+var RATE_LIMIT_ENTRY_TTL = 120; // Keep entries for 2x max window
+
+/**
+ * Check rate limit for user/RPC combination using sliding window
+ */
+function checkRateLimitInternal(userId, rpcName, maxCalls, windowSeconds) {
+    // Handle missing userId gracefully (anonymous calls)
+    if (!userId) {
+        return { allowed: true, retry_after: 0, calls_remaining: maxCalls, reset_at: 0 };
+    }
+    
+    var key = userId + '_' + rpcName;
+    var now = Math.floor(Date.now() / 1000);
+    
+    // Initialize if doesn't exist
+    if (!rateLimitStore[key]) {
+        rateLimitStore[key] = {
+            calls: [],
+            lastAccess: now
+        };
+    }
+    
+    var record = rateLimitStore[key];
+    record.lastAccess = now;
+    
+    // Remove calls outside window (sliding window)
+    var windowStart = now - windowSeconds;
+    var filteredCalls = [];
+    for (var i = 0; i < record.calls.length; i++) {
+        if (record.calls[i] > windowStart) {
+            filteredCalls.push(record.calls[i]);
+        }
+    }
+    record.calls = filteredCalls;
+    
+    // Check if limit exceeded
+    if (record.calls.length >= maxCalls) {
+        var oldestCall = record.calls[0];
+        var retryAfter = Math.ceil(oldestCall + windowSeconds - now);
+        
+        return {
+            allowed: false,
+            retry_after: Math.max(1, retryAfter),
+            calls_remaining: 0,
+            reset_at: oldestCall + windowSeconds,
+            current_calls: record.calls.length,
+            max_calls: maxCalls
+        };
+    }
+    
+    // Add current call
+    record.calls.push(now);
+    
+    return {
+        allowed: true,
+        retry_after: 0,
+        calls_remaining: maxCalls - record.calls.length,
+        reset_at: now + windowSeconds,
+        current_calls: record.calls.length,
+        max_calls: maxCalls
+    };
+}
+
+/**
+ * Rate limit presets for different RPC categories
+ */
+var RATE_LIMIT_PRESETS = {
+    // Standard operations
+    STANDARD: { maxCalls: 100, windowSeconds: 60 },
+    
+    // Write operations (wallet, score submission) - more restrictive
+    WRITE: { maxCalls: 30, windowSeconds: 60 },
+    
+    // Read operations (leaderboards, profiles) - more permissive
+    READ: { maxCalls: 200, windowSeconds: 60 },
+    
+    // Authentication operations - strict
+    AUTH: { maxCalls: 10, windowSeconds: 60 },
+    
+    // Social operations (friend requests, chat)
+    SOCIAL: { maxCalls: 50, windowSeconds: 60 },
+    
+    // Admin operations - high limit
+    ADMIN: { maxCalls: 1000, windowSeconds: 60 },
+    
+    // Expensive operations (matchmaking, tournaments)
+    EXPENSIVE: { maxCalls: 20, windowSeconds: 60 },
+    
+    // Sensitive operations (currency, rewards) - very restrictive
+    SENSITIVE: { maxCalls: 15, windowSeconds: 60 }
+};
+
+/**
+ * Wrapper function to add rate limiting to any RPC
+ * Integrates with PR #1 middleware for traceId support
+ */
+function withRateLimitWrapper(rpcFunction, rpcName, maxCalls, windowSeconds) {
+    if (typeof rpcFunction !== 'function') {
+        throw new Error('withRateLimitWrapper: rpcFunction must be a function');
+    }
+    
+    return function rateLimitedRpc(ctx, logger, nk, payload) {
+        var userId = ctx && ctx.userId ? ctx.userId : null;
+        var traceId = ctx && ctx.traceId ? ctx.traceId : 'no-trace';
+        
+        var limit = checkRateLimitInternal(userId, rpcName, maxCalls, windowSeconds);
+        
+        if (!limit.allowed) {
+            // Log rate limit hit
+            try {
+                if (typeof globalThis !== 'undefined' && globalThis.StructuredLogger) {
+                    globalThis.StructuredLogger.logStructured(logger, {
+                        level: 'warn',
+                        traceId: traceId,
+                        rpcName: rpcName,
+                        userId: userId,
+                        event: 'rate_limit_exceeded',
+                        message: 'Rate limit exceeded',
+                        metadata: {
+                            maxCalls: maxCalls,
+                            windowSeconds: windowSeconds,
+                            retryAfter: limit.retry_after,
+                            currentCalls: limit.current_calls
+                        }
+                    });
+                } else {
+                    logger.warn('[RateLimit][' + traceId + '] User ' + userId + ' exceeded limit for ' + rpcName);
+                }
+            } catch (e) {}
+            
+            // Return rate limit error with proper error code
+            var errorResponse = {
+                success: false,
+                error: 'Rate limit exceeded. Please try again in ' + limit.retry_after + ' seconds.',
+                errorCode: 'RATE_LIMITED',
+                traceId: traceId,
+                retryAfter: limit.retry_after,
+                resetAt: limit.reset_at,
+                rateLimitInfo: {
+                    maxCalls: maxCalls,
+                    windowSeconds: windowSeconds,
+                    callsRemaining: 0
+                }
+            };
+            
+            return JSON.stringify(errorResponse);
+        }
+        
+        // Execute the RPC
+        var response = rpcFunction(ctx, logger, nk, payload);
+        
+        // Add rate limit info to successful response
+        try {
+            var parsed = typeof response === 'string' ? JSON.parse(response) : response;
+            if (parsed && typeof parsed === 'object') {
+                parsed.rateLimitInfo = {
+                    callsRemaining: limit.calls_remaining,
+                    resetAt: limit.reset_at
+                };
+                return JSON.stringify(parsed);
+            }
+        } catch (e) {
+            // If response parsing fails, return original response
+        }
+        
+        return response;
+    };
+}
+
+/**
+ * Apply rate limit preset to RPC
+ */
+function withPresetRateLimitWrapper(rpcFunction, rpcName, preset) {
+    var config = RATE_LIMIT_PRESETS[preset] || RATE_LIMIT_PRESETS.STANDARD;
+    return withRateLimitWrapper(rpcFunction, rpcName, config.maxCalls, config.windowSeconds);
+}
+
+/**
+ * Cleanup stale rate limit entries to prevent memory leaks
+ */
+function cleanupRateLimitStore() {
+    var now = Math.floor(Date.now() / 1000);
+    var cleaned = 0;
+    
+    for (var key in rateLimitStore) {
+        if (rateLimitStore.hasOwnProperty(key)) {
+            var record = rateLimitStore[key];
+            // Remove entries not accessed in TTL period
+            if (now - record.lastAccess > RATE_LIMIT_ENTRY_TTL) {
+                delete rateLimitStore[key];
+                cleaned++;
+            }
+        }
+    }
+    
+    return cleaned;
+}
+
+/**
+ * Get rate limit status for debugging
+ */
+function getRateLimitStatus(userId, rpcName) {
+    var key = userId + '_' + rpcName;
+    var record = rateLimitStore[key];
+    
+    if (!record) {
+        return { exists: false, calls: 0 };
+    }
+    
+    var now = Math.floor(Date.now() / 1000);
+    // Filter to last 60 seconds for display
+    var recentCalls = record.calls.filter(function(t) { return t > now - 60; });
+    
+    return {
+        exists: true,
+        calls: recentCalls.length,
+        lastAccess: record.lastAccess,
+        oldestCall: recentCalls.length > 0 ? recentCalls[0] : null
+    };
+}
+
+// Export to globalThis for V8 runtime
+if (typeof globalThis !== 'undefined') {
+    globalThis.RateLimiting = {
+        withRateLimit: withRateLimitWrapper,
+        withPresetRateLimit: withPresetRateLimitWrapper,
+        checkRateLimit: checkRateLimitInternal,
+        cleanup: cleanupRateLimitStore,
+        getStatus: getRateLimitStatus,
+        Presets: RATE_LIMIT_PRESETS
+    };
+}
+
+// ============================================================================
+// END OF RATE LIMITING INFRASTRUCTURE
+// ============================================================================
+
 
 // ============================================================================
 // COPILOT/UTILS.JS
@@ -18120,6 +18777,33 @@ function InitModule(ctx, logger, nk, initializer) {
     logger.info('Starting JavaScript Runtime Initialization');
     logger.info('========================================');
 
+    // ========================================================================
+    // PR #1: Initialize Core Infrastructure (Structured Logging & Middleware)
+    // ========================================================================
+    try {
+        if (typeof globalThis !== 'undefined' && globalThis.Core && globalThis.Core.initialize) {
+            globalThis.Core.initialize(ctx, logger, nk);
+        } else {
+            logger.warn('[Core] Core module not available, using fallback logging');
+        }
+    } catch (err) {
+        logger.error('[Core] Failed to initialize core modules: ' + err.message);
+    }
+
+    // ========================================================================
+    // PR #2: Initialize Rate Limiting Infrastructure
+    // ========================================================================
+    try {
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            logger.info('[RateLimiting] PR #2: Rate Limiting Infrastructure initialized');
+            logger.info('[RateLimiting] Presets available: STANDARD, WRITE, READ, AUTH, SOCIAL, ADMIN, EXPENSIVE, SENSITIVE');
+        } else {
+            logger.warn('[RateLimiting] Rate limiting module not available');
+        }
+    } catch (err) {
+        logger.error('[RateLimiting] Failed to initialize: ' + err.message);
+    }
+
     // Register Copilot Wallet Mapping RPCs
     try {
         logger.info('[Copilot] Initializing Wallet Mapping Module...');
@@ -18210,13 +18894,45 @@ function InitModule(ctx, logger, nk, initializer) {
     }
 
     // Register Daily Rewards RPCs
+    // PR #1: Middleware for structured logging | PR #2: Rate limiting
     try {
         logger.info('[DailyRewards] Initializing Daily Rewards Module...');
-        initializer.registerRpc('daily_rewards_get_status', rpcDailyRewardsGetStatus);
+        
+        // PR #1 + PR #2: daily_rewards_get_status (READ, cacheable)
+        var wrappedDailyRewardsGetStatus = rpcDailyRewardsGetStatus;
+        if (typeof globalThis !== 'undefined' && globalThis.RpcMiddleware) {
+            wrappedDailyRewardsGetStatus = globalThis.RpcMiddleware.withMiddleware(
+                rpcDailyRewardsGetStatus, 
+                'daily_rewards_get_status',
+                { domain: 'daily_rewards', type: 'READ' }
+            );
+            logger.info('[DailyRewards] ✓ Wrapped with middleware: daily_rewards_get_status');
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedDailyRewardsGetStatus = globalThis.RateLimiting.withPresetRateLimit(wrappedDailyRewardsGetStatus, 'daily_rewards_get_status', 'READ');
+            logger.info('[DailyRewards] ✓ Rate limited (READ): daily_rewards_get_status');
+        }
+        initializer.registerRpc('daily_rewards_get_status', wrappedDailyRewardsGetStatus);
         logger.info('[DailyRewards] Registered RPC: daily_rewards_get_status');
-        initializer.registerRpc('daily_rewards_claim', rpcDailyRewardsClaim);
+        
+        // PR #1 + PR #2: daily_rewards_claim (WRITE, sensitive, idempotency required)
+        var wrappedDailyRewardsClaim = rpcDailyRewardsClaim;
+        if (typeof globalThis !== 'undefined' && globalThis.RpcMiddleware) {
+            wrappedDailyRewardsClaim = globalThis.RpcMiddleware.withMiddleware(
+                rpcDailyRewardsClaim,
+                'daily_rewards_claim',
+                { domain: 'daily_rewards', type: 'WRITE', sensitive: true }
+            );
+            logger.info('[DailyRewards] ✓ Wrapped with middleware: daily_rewards_claim');
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedDailyRewardsClaim = globalThis.RateLimiting.withPresetRateLimit(wrappedDailyRewardsClaim, 'daily_rewards_claim', 'SENSITIVE');
+            logger.info('[DailyRewards] ✓ Rate limited (SENSITIVE): daily_rewards_claim');
+        }
+        initializer.registerRpc('daily_rewards_claim', wrappedDailyRewardsClaim);
         logger.info('[DailyRewards] Registered RPC: daily_rewards_claim');
-        logger.info('[DailyRewards] Successfully registered 2 Daily Rewards RPCs');
+        
+        logger.info('[DailyRewards] Successfully registered 2 Daily Rewards RPCs (PR #1 + PR #2)');
     } catch (err) {
         logger.error('[DailyRewards] Failed to initialize: ' + err.message);
     }
@@ -18252,47 +18968,137 @@ function InitModule(ctx, logger, nk, initializer) {
     }
 
     // Register Daily Missions RPCs
+    // PR #2: Rate limiting applied to write/claim RPCs
     try {
         logger.info('[DailyMissions] Initializing Daily Missions Module...');
-        initializer.registerRpc('get_daily_missions', rpcGetDailyMissions);
+        
+        // PR #2: READ RPC - higher rate limit
+        var wrappedGetDailyMissions = rpcGetDailyMissions;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedGetDailyMissions = globalThis.RateLimiting.withPresetRateLimit(rpcGetDailyMissions, 'get_daily_missions', 'READ');
+            logger.info('[DailyMissions] ✓ Rate limited (READ): get_daily_missions');
+        }
+        initializer.registerRpc('get_daily_missions', wrappedGetDailyMissions);
         logger.info('[DailyMissions] Registered RPC: get_daily_missions');
-        initializer.registerRpc('submit_mission_progress', rpcSubmitMissionProgress);
+        
+        // PR #2: WRITE RPC - standard write limit
+        var wrappedSubmitMissionProgress = rpcSubmitMissionProgress;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedSubmitMissionProgress = globalThis.RateLimiting.withPresetRateLimit(rpcSubmitMissionProgress, 'submit_mission_progress', 'WRITE');
+            logger.info('[DailyMissions] ✓ Rate limited (WRITE): submit_mission_progress');
+        }
+        initializer.registerRpc('submit_mission_progress', wrappedSubmitMissionProgress);
         logger.info('[DailyMissions] Registered RPC: submit_mission_progress');
-        initializer.registerRpc('claim_mission_reward', rpcClaimMissionReward);
+        
+        // PR #2: SENSITIVE RPC - currency claim, strictest limit
+        var wrappedClaimMissionReward = rpcClaimMissionReward;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedClaimMissionReward = globalThis.RateLimiting.withPresetRateLimit(rpcClaimMissionReward, 'claim_mission_reward', 'SENSITIVE');
+            logger.info('[DailyMissions] ✓ Rate limited (SENSITIVE): claim_mission_reward');
+        }
+        initializer.registerRpc('claim_mission_reward', wrappedClaimMissionReward);
         logger.info('[DailyMissions] Registered RPC: claim_mission_reward');
-        logger.info('[DailyMissions] Successfully registered 3 Daily Missions RPCs');
+        
+        logger.info('[DailyMissions] Successfully registered 3 Daily Missions RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[DailyMissions] Failed to initialize: ' + err.message);
     }
 
 
     // Register Enhanced Wallet RPCs
+    // PR #1: Middleware for structured logging | PR #2: Rate limiting
     try {
         logger.info('[Wallet] Initializing Enhanced Wallet Module...');
-        initializer.registerRpc('wallet_get_all', rpcWalletGetAll);
+        
+        // PR #1 + PR #2: wallet_get_all (READ, sensitive - financial data)
+        var wrappedWalletGetAll = rpcWalletGetAll;
+        if (typeof globalThis !== 'undefined' && globalThis.RpcMiddleware) {
+            wrappedWalletGetAll = globalThis.RpcMiddleware.withMiddleware(
+                rpcWalletGetAll,
+                'wallet_get_all',
+                { domain: 'wallet', type: 'READ', sensitive: true }
+            );
+            logger.info('[Wallet] ✓ Wrapped with middleware: wallet_get_all');
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedWalletGetAll = globalThis.RateLimiting.withPresetRateLimit(wrappedWalletGetAll, 'wallet_get_all', 'READ');
+            logger.info('[Wallet] ✓ Rate limited (READ): wallet_get_all');
+        }
+        initializer.registerRpc('wallet_get_all', wrappedWalletGetAll);
         logger.info('[Wallet] Registered RPC: wallet_get_all');
-        initializer.registerRpc('wallet_update_global', rpcWalletUpdateGlobal);
+        
+        // PR #1 + PR #2: wallet_update_global (WRITE, sensitive, admin-only)
+        var wrappedWalletUpdateGlobal = rpcWalletUpdateGlobal;
+        if (typeof globalThis !== 'undefined' && globalThis.RpcMiddleware) {
+            wrappedWalletUpdateGlobal = globalThis.RpcMiddleware.withMiddleware(
+                rpcWalletUpdateGlobal,
+                'wallet_update_global',
+                { domain: 'wallet', type: 'WRITE', sensitive: true, adminOnly: true }
+            );
+            logger.info('[Wallet] ✓ Wrapped with middleware: wallet_update_global');
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedWalletUpdateGlobal = globalThis.RateLimiting.withPresetRateLimit(wrappedWalletUpdateGlobal, 'wallet_update_global', 'SENSITIVE');
+            logger.info('[Wallet] ✓ Rate limited (SENSITIVE): wallet_update_global');
+        }
+        initializer.registerRpc('wallet_update_global', wrappedWalletUpdateGlobal);
         logger.info('[Wallet] Registered RPC: wallet_update_global');
-        initializer.registerRpc('wallet_update_game_wallet', rpcWalletUpdateGameWallet);
+        
+        // PR #2: wallet_update_game_wallet (SENSITIVE - currency modification)
+        var wrappedWalletUpdateGameWallet = rpcWalletUpdateGameWallet;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedWalletUpdateGameWallet = globalThis.RateLimiting.withPresetRateLimit(rpcWalletUpdateGameWallet, 'wallet_update_game_wallet', 'SENSITIVE');
+            logger.info('[Wallet] ✓ Rate limited (SENSITIVE): wallet_update_game_wallet');
+        }
+        initializer.registerRpc('wallet_update_game_wallet', wrappedWalletUpdateGameWallet);
         logger.info('[Wallet] Registered RPC: wallet_update_game_wallet');
-        initializer.registerRpc('wallet_transfer_between_game_wallets', rpcWalletTransferBetweenGameWallets);
+        
+        // PR #2: wallet_transfer_between_game_wallets (SENSITIVE - currency transfer)
+        var wrappedWalletTransfer = rpcWalletTransferBetweenGameWallets;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedWalletTransfer = globalThis.RateLimiting.withPresetRateLimit(rpcWalletTransferBetweenGameWallets, 'wallet_transfer_between_game_wallets', 'SENSITIVE');
+            logger.info('[Wallet] ✓ Rate limited (SENSITIVE): wallet_transfer_between_game_wallets');
+        }
+        initializer.registerRpc('wallet_transfer_between_game_wallets', wrappedWalletTransfer);
         logger.info('[Wallet] Registered RPC: wallet_transfer_between_game_wallets');
 
-        // NEW:
-        initializer.registerRpc('wallet_get_balances', rpcWalletGetBalances);
+        // PR #2: wallet_get_balances (READ)
+        var wrappedWalletGetBalances = rpcWalletGetBalances;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedWalletGetBalances = globalThis.RateLimiting.withPresetRateLimit(rpcWalletGetBalances, 'wallet_get_balances', 'READ');
+            logger.info('[Wallet] ✓ Rate limited (READ): wallet_get_balances');
+        }
+        initializer.registerRpc('wallet_get_balances', wrappedWalletGetBalances);
         logger.info('[Wallet] Registered RPC: wallet_get_balances');
 
-        logger.info('[Wallet] Successfully registered 5 Enhanced Wallet RPCs');
+        logger.info('[Wallet] Successfully registered 5 Enhanced Wallet RPCs (PR #1 + PR #2)');
     } catch (err) {
         logger.error('[Wallet] Failed to initialize: ' + err.message);
     }
 
     // Register Analytics RPCs
+    // PR #1: Middleware for structured logging | PR #2: Rate limiting
     try {
         logger.info('[Analytics] Initializing Analytics Module...');
-        initializer.registerRpc('analytics_log_event', rpcAnalyticsLogEvent);
+        
+        // PR #1 + PR #2: analytics_log_event (WRITE, standard rate limit)
+        var wrappedAnalyticsLogEvent = rpcAnalyticsLogEvent;
+        if (typeof globalThis !== 'undefined' && globalThis.RpcMiddleware) {
+            wrappedAnalyticsLogEvent = globalThis.RpcMiddleware.withMiddleware(
+                rpcAnalyticsLogEvent,
+                'analytics_log_event',
+                { domain: 'analytics', type: 'WRITE' }
+            );
+            logger.info('[Analytics] ✓ Wrapped with middleware: analytics_log_event');
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedAnalyticsLogEvent = globalThis.RateLimiting.withPresetRateLimit(wrappedAnalyticsLogEvent, 'analytics_log_event', 'WRITE');
+            logger.info('[Analytics] ✓ Rate limited (WRITE): analytics_log_event');
+        }
+        initializer.registerRpc('analytics_log_event', wrappedAnalyticsLogEvent);
         logger.info('[Analytics] Registered RPC: analytics_log_event');
-        logger.info('[Analytics] Successfully registered 1 Analytics RPC');
+        
+        logger.info('[Analytics] Successfully registered 1 Analytics RPC (PR #1 + PR #2)');
     } catch (err) {
         logger.error('[Analytics] Failed to initialize: ' + err.message);
     }
@@ -18576,39 +19382,99 @@ function InitModule(ctx, logger, nk, initializer) {
     }
 
     // Register Matchmaking System RPCs
+    // PR #2: Rate limiting applied - EXPENSIVE for find match
     try {
         logger.info('[Matchmaking] Initializing Matchmaking System Module...');
-        initializer.registerRpc('matchmaking_find_match', rpcMatchmakingFindMatch);
+        
+        // PR #2: EXPENSIVE - matchmaking is resource-intensive
+        var wrappedFindMatch = rpcMatchmakingFindMatch;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedFindMatch = globalThis.RateLimiting.withPresetRateLimit(rpcMatchmakingFindMatch, 'matchmaking_find_match', 'EXPENSIVE');
+            logger.info('[Matchmaking] ✓ Rate limited (EXPENSIVE): matchmaking_find_match');
+        }
+        initializer.registerRpc('matchmaking_find_match', wrappedFindMatch);
         logger.info('[Matchmaking] Registered RPC: matchmaking_find_match');
+        
         initializer.registerRpc('matchmaking_cancel', rpcMatchmakingCancel);
         logger.info('[Matchmaking] Registered RPC: matchmaking_cancel');
         initializer.registerRpc('matchmaking_get_status', rpcMatchmakingGetStatus);
         logger.info('[Matchmaking] Registered RPC: matchmaking_get_status');
-        initializer.registerRpc('matchmaking_create_party', rpcMatchmakingCreateParty);
+        
+        // PR #2: SOCIAL - party operations
+        var wrappedCreateParty = rpcMatchmakingCreateParty;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedCreateParty = globalThis.RateLimiting.withPresetRateLimit(rpcMatchmakingCreateParty, 'matchmaking_create_party', 'SOCIAL');
+        }
+        initializer.registerRpc('matchmaking_create_party', wrappedCreateParty);
         logger.info('[Matchmaking] Registered RPC: matchmaking_create_party');
-        initializer.registerRpc('matchmaking_join_party', rpcMatchmakingJoinParty);
+        
+        var wrappedJoinParty = rpcMatchmakingJoinParty;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedJoinParty = globalThis.RateLimiting.withPresetRateLimit(rpcMatchmakingJoinParty, 'matchmaking_join_party', 'SOCIAL');
+        }
+        initializer.registerRpc('matchmaking_join_party', wrappedJoinParty);
         logger.info('[Matchmaking] Registered RPC: matchmaking_join_party');
-        logger.info('[Matchmaking] Successfully registered 5 Matchmaking RPCs');
+        
+        logger.info('[Matchmaking] Successfully registered 5 Matchmaking RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[Matchmaking] Failed to initialize: ' + err.message);
     }
 
     // Register Tournament System RPCs
+    // PR #2: Rate limiting applied
     try {
         logger.info('[Tournament] Initializing Tournament System Module...');
-        initializer.registerRpc('tournament_create', rpcTournamentCreate);
+        
+        // EXPENSIVE - tournament creation
+        var wrappedTournamentCreate = rpcTournamentCreate;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedTournamentCreate = globalThis.RateLimiting.withPresetRateLimit(rpcTournamentCreate, 'tournament_create', 'EXPENSIVE');
+        }
+        initializer.registerRpc('tournament_create', wrappedTournamentCreate);
         logger.info('[Tournament] Registered RPC: tournament_create');
-        initializer.registerRpc('tournament_join', rpcTournamentJoin);
+        
+        // WRITE - joining
+        var wrappedTournamentJoin = rpcTournamentJoin;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedTournamentJoin = globalThis.RateLimiting.withPresetRateLimit(rpcTournamentJoin, 'tournament_join', 'WRITE');
+        }
+        initializer.registerRpc('tournament_join', wrappedTournamentJoin);
         logger.info('[Tournament] Registered RPC: tournament_join');
-        initializer.registerRpc('tournament_list_active', rpcTournamentListActive);
+        
+        // READ - list active
+        var wrappedTournamentList = rpcTournamentListActive;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedTournamentList = globalThis.RateLimiting.withPresetRateLimit(rpcTournamentListActive, 'tournament_list_active', 'READ');
+        }
+        initializer.registerRpc('tournament_list_active', wrappedTournamentList);
         logger.info('[Tournament] Registered RPC: tournament_list_active');
-        initializer.registerRpc('tournament_submit_score', rpcTournamentSubmitScore);
+        
+        // WRITE - score submission
+        var wrappedTournamentSubmitScore = rpcTournamentSubmitScore;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedTournamentSubmitScore = globalThis.RateLimiting.withPresetRateLimit(rpcTournamentSubmitScore, 'tournament_submit_score', 'WRITE');
+        }
+        initializer.registerRpc('tournament_submit_score', wrappedTournamentSubmitScore);
         logger.info('[Tournament] Registered RPC: tournament_submit_score');
-        initializer.registerRpc('tournament_get_leaderboard', rpcTournamentGetLeaderboard);
+        
+        // READ - leaderboard
+        var wrappedTournamentLeaderboard = rpcTournamentGetLeaderboard;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedTournamentLeaderboard = globalThis.RateLimiting.withPresetRateLimit(rpcTournamentGetLeaderboard, 'tournament_get_leaderboard', 'READ');
+        }
+        initializer.registerRpc('tournament_get_leaderboard', wrappedTournamentLeaderboard);
         logger.info('[Tournament] Registered RPC: tournament_get_leaderboard');
-        initializer.registerRpc('tournament_claim_rewards', rpcTournamentClaimRewards);
+        
+        // SENSITIVE - reward claim (currency)
+        var wrappedTournamentClaimRewards = rpcTournamentClaimRewards;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedTournamentClaimRewards = globalThis.RateLimiting.withPresetRateLimit(rpcTournamentClaimRewards, 'tournament_claim_rewards', 'SENSITIVE');
+            logger.info('[Tournament] ✓ Rate limited (SENSITIVE): tournament_claim_rewards');
+        }
+        initializer.registerRpc('tournament_claim_rewards', wrappedTournamentClaimRewards);
         logger.info('[Tournament] Registered RPC: tournament_claim_rewards');
-        logger.info('[Tournament] Successfully registered 6 Tournament RPCs');
+        
+        logger.info('[Tournament] Successfully registered 6 Tournament RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[Tournament] Failed to initialize: ' + err.message);
     }
@@ -18661,6 +19527,7 @@ function InitModule(ctx, logger, nk, initializer) {
     }
 
     // Register Onboarding System RPCs
+    // PR #2: Rate limiting applied - SENSITIVE for welcome bonus claim
     try {
         logger.info('[Onboarding] Initializing Onboarding Module...');
         initializer.registerRpc('onboarding_get_state', rpcOnboardingGetState);
@@ -18673,8 +19540,16 @@ function InitModule(ctx, logger, nk, initializer) {
         logger.info('[Onboarding] Registered RPC: onboarding_set_interests');
         initializer.registerRpc('onboarding_get_interests', rpcOnboardingGetInterests);
         logger.info('[Onboarding] Registered RPC: onboarding_get_interests');
-        initializer.registerRpc('onboarding_claim_welcome_bonus', rpcOnboardingClaimWelcomeBonus);
+        
+        // PR #2: SENSITIVE - currency claim
+        var wrappedOnboardingClaimBonus = rpcOnboardingClaimWelcomeBonus;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedOnboardingClaimBonus = globalThis.RateLimiting.withPresetRateLimit(rpcOnboardingClaimWelcomeBonus, 'onboarding_claim_welcome_bonus', 'SENSITIVE');
+            logger.info('[Onboarding] ✓ Rate limited (SENSITIVE): onboarding_claim_welcome_bonus');
+        }
+        initializer.registerRpc('onboarding_claim_welcome_bonus', wrappedOnboardingClaimBonus);
         logger.info('[Onboarding] Registered RPC: onboarding_claim_welcome_bonus');
+        
         initializer.registerRpc('onboarding_first_quiz_complete', rpcOnboardingFirstQuizComplete);
         logger.info('[Onboarding] Registered RPC: onboarding_first_quiz_complete');
         initializer.registerRpc('onboarding_get_tomorrow_preview', rpcOnboardingGetTomorrowPreview);
@@ -18685,12 +19560,13 @@ function InitModule(ctx, logger, nk, initializer) {
         logger.info('[Onboarding] Registered RPC: onboarding_get_retention_data');
         initializer.registerRpc('onboarding_create_link_quiz', rpcOnboardingCreateLinkQuiz);
         logger.info('[Onboarding] Registered RPC: onboarding_create_link_quiz');
-        logger.info('[Onboarding] Successfully registered 11 Onboarding RPCs');
+        logger.info('[Onboarding] Successfully registered 11 Onboarding RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[Onboarding] Failed to initialize: ' + err.message);
     }
 
     // Register Retention System RPCs (75% D1 Retention)
+    // PR #2: Rate limiting applied - SENSITIVE for welcome bonus claim
     try {
         logger.info('[Retention] Initializing Retention Module...');
         initializer.registerRpc('retention_grant_streak_shield', rpcRetentionGrantStreakShield);
@@ -18705,9 +19581,17 @@ function InitModule(ctx, logger, nk, initializer) {
         logger.info('[Retention] Registered RPC: retention_get_recommendations');
         initializer.registerRpc('retention_track_first_session', rpcRetentionTrackFirstSession);
         logger.info('[Retention] Registered RPC: retention_track_first_session');
-        initializer.registerRpc('retention_claim_welcome_bonus', rpcRetentionClaimWelcomeBonus);
+        
+        // PR #2: SENSITIVE - currency claim
+        var wrappedRetentionClaimBonus = rpcRetentionClaimWelcomeBonus;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedRetentionClaimBonus = globalThis.RateLimiting.withPresetRateLimit(rpcRetentionClaimWelcomeBonus, 'retention_claim_welcome_bonus', 'SENSITIVE');
+            logger.info('[Retention] ✓ Rate limited (SENSITIVE): retention_claim_welcome_bonus');
+        }
+        initializer.registerRpc('retention_claim_welcome_bonus', wrappedRetentionClaimBonus);
         logger.info('[Retention] Registered RPC: retention_claim_welcome_bonus');
-        logger.info('[Retention] Successfully registered 7 Retention RPCs');
+        
+        logger.info('[Retention] Successfully registered 7 Retention RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[Retention] Failed to initialize: ' + err.message);
     }
@@ -18717,22 +19601,39 @@ function InitModule(ctx, logger, nk, initializer) {
     // ============================================================================
 
     // Register Weekly Goals System RPCs (D7 Retention)
+    // PR #2: Rate limiting applied - SENSITIVE for reward claims
     try {
         logger.info('[WeeklyGoals] Initializing Weekly Goals Module...');
         initializer.registerRpc('weekly_goals_get_status', rpcWeeklyGoalsGetStatus);
         logger.info('[WeeklyGoals] Registered RPC: weekly_goals_get_status');
         initializer.registerRpc('weekly_goals_update_progress', rpcWeeklyGoalsUpdateProgress);
         logger.info('[WeeklyGoals] Registered RPC: weekly_goals_update_progress');
-        initializer.registerRpc('weekly_goals_claim_reward', rpcWeeklyGoalsClaimReward);
+        
+        // PR #2: SENSITIVE - currency claim
+        var wrappedWeeklyGoalsClaimReward = rpcWeeklyGoalsClaimReward;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedWeeklyGoalsClaimReward = globalThis.RateLimiting.withPresetRateLimit(rpcWeeklyGoalsClaimReward, 'weekly_goals_claim_reward', 'SENSITIVE');
+            logger.info('[WeeklyGoals] ✓ Rate limited (SENSITIVE): weekly_goals_claim_reward');
+        }
+        initializer.registerRpc('weekly_goals_claim_reward', wrappedWeeklyGoalsClaimReward);
         logger.info('[WeeklyGoals] Registered RPC: weekly_goals_claim_reward');
-        initializer.registerRpc('weekly_goals_claim_bonus', rpcWeeklyGoalsClaimBonus);
+        
+        // PR #2: SENSITIVE - bonus claim
+        var wrappedWeeklyGoalsClaimBonus = rpcWeeklyGoalsClaimBonus;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedWeeklyGoalsClaimBonus = globalThis.RateLimiting.withPresetRateLimit(rpcWeeklyGoalsClaimBonus, 'weekly_goals_claim_bonus', 'SENSITIVE');
+            logger.info('[WeeklyGoals] ✓ Rate limited (SENSITIVE): weekly_goals_claim_bonus');
+        }
+        initializer.registerRpc('weekly_goals_claim_bonus', wrappedWeeklyGoalsClaimBonus);
         logger.info('[WeeklyGoals] Registered RPC: weekly_goals_claim_bonus');
-        logger.info('[WeeklyGoals] Successfully registered 4 Weekly Goals RPCs');
+        
+        logger.info('[WeeklyGoals] Successfully registered 4 Weekly Goals RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[WeeklyGoals] Failed to initialize: ' + err.message);
     }
 
     // Register Season Pass System RPCs (D7/D30 Retention)
+    // PR #2: Rate limiting applied - SENSITIVE for reward claim
     try {
         logger.info('[SeasonPass] Initializing Season Pass Module...');
         initializer.registerRpc('season_pass_get_status', rpcSeasonPassGetStatus);
@@ -18741,59 +19642,101 @@ function InitModule(ctx, logger, nk, initializer) {
         logger.info('[SeasonPass] Registered RPC: season_pass_add_xp');
         initializer.registerRpc('season_pass_complete_quest', rpcSeasonPassCompleteQuest);
         logger.info('[SeasonPass] Registered RPC: season_pass_complete_quest');
-        initializer.registerRpc('season_pass_claim_reward', rpcSeasonPassClaimReward);
+        
+        // PR #2: SENSITIVE - reward claim
+        var wrappedSeasonPassClaimReward = rpcSeasonPassClaimReward;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedSeasonPassClaimReward = globalThis.RateLimiting.withPresetRateLimit(rpcSeasonPassClaimReward, 'season_pass_claim_reward', 'SENSITIVE');
+            logger.info('[SeasonPass] ✓ Rate limited (SENSITIVE): season_pass_claim_reward');
+        }
+        initializer.registerRpc('season_pass_claim_reward', wrappedSeasonPassClaimReward);
         logger.info('[SeasonPass] Registered RPC: season_pass_claim_reward');
+        
         initializer.registerRpc('season_pass_purchase_premium', rpcSeasonPassPurchasePremium);
         logger.info('[SeasonPass] Registered RPC: season_pass_purchase_premium');
-        logger.info('[SeasonPass] Successfully registered 5 Season Pass RPCs');
+        logger.info('[SeasonPass] Successfully registered 5 Season Pass RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[SeasonPass] Failed to initialize: ' + err.message);
     }
 
     // Register Monthly Milestones System RPCs (D30 Retention)
+    // PR #2: Rate limiting applied - SENSITIVE for reward claims
     try {
         logger.info('[MonthlyMilestones] Initializing Monthly Milestones Module...');
         initializer.registerRpc('monthly_milestones_get_status', rpcMonthlyMilestonesGetStatus);
         logger.info('[MonthlyMilestones] Registered RPC: monthly_milestones_get_status');
         initializer.registerRpc('monthly_milestones_update_progress', rpcMonthlyMilestonesUpdateProgress);
         logger.info('[MonthlyMilestones] Registered RPC: monthly_milestones_update_progress');
-        initializer.registerRpc('monthly_milestones_claim_reward', rpcMonthlyMilestonesClaimReward);
+        
+        // PR #2: SENSITIVE - reward claim
+        var wrappedMilestonesClaimReward = rpcMonthlyMilestonesClaimReward;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedMilestonesClaimReward = globalThis.RateLimiting.withPresetRateLimit(rpcMonthlyMilestonesClaimReward, 'monthly_milestones_claim_reward', 'SENSITIVE');
+            logger.info('[MonthlyMilestones] ✓ Rate limited (SENSITIVE): monthly_milestones_claim_reward');
+        }
+        initializer.registerRpc('monthly_milestones_claim_reward', wrappedMilestonesClaimReward);
         logger.info('[MonthlyMilestones] Registered RPC: monthly_milestones_claim_reward');
-        initializer.registerRpc('monthly_milestones_claim_legendary', rpcMonthlyMilestonesClaimLegendary);
+        
+        // PR #2: SENSITIVE - legendary claim
+        var wrappedMilestonesClaimLegendary = rpcMonthlyMilestonesClaimLegendary;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedMilestonesClaimLegendary = globalThis.RateLimiting.withPresetRateLimit(rpcMonthlyMilestonesClaimLegendary, 'monthly_milestones_claim_legendary', 'SENSITIVE');
+            logger.info('[MonthlyMilestones] ✓ Rate limited (SENSITIVE): monthly_milestones_claim_legendary');
+        }
+        initializer.registerRpc('monthly_milestones_claim_legendary', wrappedMilestonesClaimLegendary);
         logger.info('[MonthlyMilestones] Registered RPC: monthly_milestones_claim_legendary');
-        logger.info('[MonthlyMilestones] Successfully registered 4 Monthly Milestones RPCs');
+        
+        logger.info('[MonthlyMilestones] Successfully registered 4 Monthly Milestones RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[MonthlyMilestones] Failed to initialize: ' + err.message);
     }
 
     // Register Collections & Prestige System RPCs (D30 Retention)
+    // PR #2: Rate limiting applied
     try {
         logger.info('[Collections] Initializing Collections & Prestige Module...');
         initializer.registerRpc('collections_get_status', rpcCollectionsGetStatus);
         logger.info('[Collections] Registered RPC: collections_get_status');
-        initializer.registerRpc('collections_unlock_item', rpcCollectionsUnlockItem);
+        
+        // PR #2: WRITE - unlock item (may involve currency)
+        var wrappedCollectionsUnlockItem = rpcCollectionsUnlockItem;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedCollectionsUnlockItem = globalThis.RateLimiting.withPresetRateLimit(rpcCollectionsUnlockItem, 'collections_unlock_item', 'WRITE');
+            logger.info('[Collections] ✓ Rate limited (WRITE): collections_unlock_item');
+        }
+        initializer.registerRpc('collections_unlock_item', wrappedCollectionsUnlockItem);
         logger.info('[Collections] Registered RPC: collections_unlock_item');
+        
         initializer.registerRpc('collections_equip_item', rpcCollectionsEquipItem);
         logger.info('[Collections] Registered RPC: collections_equip_item');
         initializer.registerRpc('collections_add_mastery_xp', rpcCollectionsAddMasteryXP);
         logger.info('[Collections] Registered RPC: collections_add_mastery_xp');
-        logger.info('[Collections] Successfully registered 4 Collections RPCs');
+        logger.info('[Collections] Successfully registered 4 Collections RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[Collections] Failed to initialize: ' + err.message);
     }
 
     // Register Win-back System RPCs (D30 Retention - Re-engagement)
+    // PR #2: Rate limiting applied - SENSITIVE for reward claim
     try {
         logger.info('[Winback] Initializing Win-back Module...');
         initializer.registerRpc('winback_check_status', rpcWinbackCheckStatus);
         logger.info('[Winback] Registered RPC: winback_check_status');
-        initializer.registerRpc('winback_claim_rewards', rpcWinbackClaimRewards);
+        
+        // PR #2: SENSITIVE - reward claim
+        var wrappedWinbackClaimRewards = rpcWinbackClaimRewards;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedWinbackClaimRewards = globalThis.RateLimiting.withPresetRateLimit(rpcWinbackClaimRewards, 'winback_claim_rewards', 'SENSITIVE');
+            logger.info('[Winback] ✓ Rate limited (SENSITIVE): winback_claim_rewards');
+        }
+        initializer.registerRpc('winback_claim_rewards', wrappedWinbackClaimRewards);
         logger.info('[Winback] Registered RPC: winback_claim_rewards');
+        
         initializer.registerRpc('winback_record_session', rpcWinbackRecordSession);
         logger.info('[Winback] Registered RPC: winback_record_session');
         initializer.registerRpc('winback_schedule_reengagement', rpcWinbackScheduleReengagement);
         logger.info('[Winback] Registered RPC: winback_schedule_reengagement');
-        logger.info('[Winback] Successfully registered 4 Win-back RPCs');
+        logger.info('[Winback] Successfully registered 4 Win-back RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[Winback] Failed to initialize: ' + err.message);
     }
@@ -18803,17 +19746,26 @@ function InitModule(ctx, logger, nk, initializer) {
     // ============================================================================
 
     // Register Progressive Unlocks System RPCs (D7 Retention)
+    // PR #2: Rate limiting applied
     try {
         logger.info('[ProgressiveUnlocks] Initializing Progressive Unlocks Module...');
         initializer.registerRpc('progressive_get_state', rpcGetUnlockState);
         logger.info('[ProgressiveUnlocks] Registered RPC: progressive_get_state');
-        initializer.registerRpc('progressive_claim_unlock', rpcClaimUnlock);
+        
+        // PR #2: WRITE - claim unlock
+        var wrappedClaimUnlock = rpcClaimUnlock;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedClaimUnlock = globalThis.RateLimiting.withPresetRateLimit(rpcClaimUnlock, 'progressive_claim_unlock', 'WRITE');
+            logger.info('[ProgressiveUnlocks] ✓ Rate limited (WRITE): progressive_claim_unlock');
+        }
+        initializer.registerRpc('progressive_claim_unlock', wrappedClaimUnlock);
         logger.info('[ProgressiveUnlocks] Registered RPC: progressive_claim_unlock');
+        
         initializer.registerRpc('progressive_check_feature', rpcCheckFeatureUnlocked);
         logger.info('[ProgressiveUnlocks] Registered RPC: progressive_check_feature');
         initializer.registerRpc('progressive_update_progress', rpcUpdateProgressProgressive);
         logger.info('[ProgressiveUnlocks] Registered RPC: progressive_update_progress');
-        logger.info('[ProgressiveUnlocks] Successfully registered 4 Progressive Unlock RPCs');
+        logger.info('[ProgressiveUnlocks] Successfully registered 4 Progressive Unlock RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[ProgressiveUnlocks] Failed to initialize: ' + err.message);
     }
@@ -18837,17 +19789,26 @@ function InitModule(ctx, logger, nk, initializer) {
     // ============================================================================
 
     // Register Rewarded Ads System RPCs
+    // PR #2: Rate limiting applied - SENSITIVE for ad reward claim
     try {
         logger.info('[RewardedAds] Initializing Rewarded Ads System Module...');
         initializer.registerRpc('rewarded_ad_request_token', rpcRewardedAdRequestToken);
         logger.info('[RewardedAds] Registered RPC: rewarded_ad_request_token');
-        initializer.registerRpc('rewarded_ad_claim', rpcRewardedAdClaim);
+        
+        // PR #2: SENSITIVE - ad reward claim (currency)
+        var wrappedRewardedAdClaim = rpcRewardedAdClaim;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedRewardedAdClaim = globalThis.RateLimiting.withPresetRateLimit(rpcRewardedAdClaim, 'rewarded_ad_claim', 'SENSITIVE');
+            logger.info('[RewardedAds] ✓ Rate limited (SENSITIVE): rewarded_ad_claim');
+        }
+        initializer.registerRpc('rewarded_ad_claim', wrappedRewardedAdClaim);
         logger.info('[RewardedAds] Registered RPC: rewarded_ad_claim');
+        
         initializer.registerRpc('rewarded_ad_validate_score_multiplier', rpcValidateScoreMultiplier);
         logger.info('[RewardedAds] Registered RPC: rewarded_ad_validate_score_multiplier');
         initializer.registerRpc('rewarded_ad_get_status', rpcGetRewardedAdStatus);
         logger.info('[RewardedAds] Registered RPC: rewarded_ad_get_status');
-        logger.info('[RewardedAds] Successfully registered 4 Rewarded Ads RPCs');
+        logger.info('[RewardedAds] Successfully registered 4 Rewarded Ads RPCs (with PR #2 rate limiting)');
     } catch (err) {
         logger.error('[RewardedAds] Failed to initialize: ' + err.message);
     }

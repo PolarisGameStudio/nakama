@@ -171,5 +171,16 @@ var withPresetRateLimit = function(rpcFunction, rpcName, preset) {
     return withRateLimit(rpcFunction, rpcName, config.maxCalls, config.windowSeconds);
 };
 
+// Export to globalThis for V8 runtime compatibility (PR #2)
+if (typeof globalThis !== 'undefined') {
+    globalThis.RateLimiting = {
+        checkRateLimit: checkRateLimit,
+        withRateLimit: withRateLimit,
+        withPresetRateLimit: withPresetRateLimit,
+        RateLimitPresets: RateLimitPresets,
+        rpcRateLimitStatus: rpcRateLimitStatus
+    };
+}
+
 // Example usage in index.js:
 // initializer.registerRpc("submit_score", withPresetRateLimit(rpcSubmitScore, "submit_score", "WRITE"));

@@ -1,0 +1,65 @@
+# Nakama Backend – Cursor Rules
+
+This repo is a Nakama game server backend. Use the context pack and these rules for all edits.
+
+---
+
+## Source of truth
+
+- **Context pack:** `docs/context/` – read these for architecture, RPCs, storage, security, performance, observability, and migrations.
+- **Execution plan:** `docs/context/EXECUTION_PLAN.md` – PR-sized slices; implement in order unless otherwise agreed.
+- **Runtime entry:** `data/modules/index.js` → `InitModule()` (JavaScript/V8; no bundler).
+
+---
+
+## Hard rules (never break)
+
+1. **RPC contract**
+   - Do **not** change RPC names, request/response shapes, or error codes for existing RPCs.
+   - Add new RPCs or optional fields only; keep full backward compatibility.
+
+2. **Sensitive RPCs (currency/rewards)**
+   - The 13 sensitive RPCs listed in `docs/context/RPC_CATALOG.md` (e.g. `wallet_update_global`, `daily_rewards_claim`, `rewarded_ad_claim`) **must** be idempotent.
+   - Use client-provided idempotency keys with server fallback; never double-credit on retries.
+
+3. **Rate limiting**
+   - All write RPCs must go through rate limiting. Use presets from `docs/context/SECURITY_MODEL.md`; wire existing infra in `data/modules/infrastructure/rate_limiting.js`.
+
+4. **Input validation**
+   - Validate and sanitize all RPC inputs. Prefer a small shared validation layer; no raw `payload` use without checks.
+
+5. **Logging**
+   - Use structured JSON logging. Include `traceId`, `rpc`, `userId`, and relevant payload (no secrets). See `docs/context/OBSERVABILITY.md`.
+
+6. **Admin / dangerous ops**
+   - Any RPC that can modify other users or global state must enforce admin (or equivalent) authorization and be documented in the security model.
+
+---
+
+## Code quality
+
+- **Go:** Follow existing style; run `golangci-lint` (see `.golangci.yml`). No new `vendor` commits unless necessary.
+- **JavaScript (runtime):** No bundler (V8/CommonJS). Prefer small modules under `data/modules/`; avoid growing the monolithic `index.js` with new inline logic.
+- **Storage:** When adding or changing stored objects, add a `schemaVersion` and follow `docs/context/MIGRATIONS.md` and `docs/context/STORAGE_CATALOG.md`.
+
+---
+
+## When editing
+
+- **RPCs:** Check `docs/context/RPC_CATALOG.md` for sensitivity, rate-limit preset, idempotency, and validation.
+- **Storage:** Check `docs/context/STORAGE_CATALOG.md` for collections and key patterns; keep schema versioning in mind.
+- **New features:** Prefer extending the context pack (e.g. add entries to RPC_CATALOG, STORAGE_CATALOG) and then implementing in line with `EXECUTION_PLAN.md`.
+
+---
+
+## Files to reference by task
+
+| Task                     | Primary reference              |
+|--------------------------|--------------------------------|
+| RPC list / behavior      | `docs/context/RPC_CATALOG.md`  |
+| Storage / schema         | `docs/context/STORAGE_CATALOG.md`, `MIGRATIONS.md` |
+| Security / limits        | `docs/context/SECURITY_MODEL.md` |
+| Caching / performance    | `docs/context/PERFORMANCE_PLAYBOOK.md` |
+| Logging / metrics        | `docs/context/OBSERVABILITY.md` |
+| What to build next       | `docs/context/EXECUTION_PLAN.md` |
+| High-level architecture  | `docs/context/ARCHITECTURE.md`  |
