@@ -457,7 +457,7 @@ function rpcCollectionsAddMasteryXP(ctx, logger, nk, payload) {
     
     var gameId = data.gameId;
     var category = data.category;
-    var xpToAdd = parseInt(data.xp);
+    var xpToAdd = parseInt(data.xp, 10);
     var questionsAnswered = data.questionsAnswered || 0;
     var correctAnswers = data.correctAnswers || 0;
     

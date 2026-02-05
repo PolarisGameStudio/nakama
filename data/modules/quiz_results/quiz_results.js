@@ -244,9 +244,9 @@ function rpcQuizSubmitResult(ctx, logger, nk, payload) {
         username: username,
         gameId: data.gameId,
         gameMode: data.gameMode,
-        score: parseInt(data.score) || 0,
-        correctAnswers: parseInt(data.correctAnswers) || 0,
-        totalQuestions: parseInt(data.totalQuestions) || 0,
+        score: parseInt(data.score, 10) || 0,
+        correctAnswers: parseInt(data.correctAnswers, 10) || 0,
+        totalQuestions: parseInt(data.totalQuestions, 10) || 0,
         timeTakenSeconds: parseFloat(data.timeTakenSeconds) || 0,
         won: data.won === true || data.won === "true",
         
@@ -258,14 +258,14 @@ function rpcQuizSubmitResult(ctx, logger, nk, payload) {
         opponentName: data.opponentName || null,
         tournamentId: data.tournamentId || null,
         matchId: data.matchId || null,
-        hintsUsed: parseInt(data.hintsUsed) || 0,
-        skipsUsed: parseInt(data.skipsUsed) || 0,
-        extraTimeUsed: parseInt(data.extraTimeUsed) || 0,
-        extraLivesUsed: parseInt(data.extraLivesUsed) || 0,
-        coinsSpent: parseInt(data.coinsSpent) || 0,
-        coinsEarned: parseInt(data.coinsEarned) || 0,
-        xpEarned: parseInt(data.xpEarned) || 0,
-        streakDay: parseInt(data.streakDay) || 0,
+        hintsUsed: parseInt(data.hintsUsed, 10) || 0,
+        skipsUsed: parseInt(data.skipsUsed, 10) || 0,
+        extraTimeUsed: parseInt(data.extraTimeUsed, 10) || 0,
+        extraLivesUsed: parseInt(data.extraLivesUsed, 10) || 0,
+        coinsSpent: parseInt(data.coinsSpent, 10) || 0,
+        coinsEarned: parseInt(data.coinsEarned, 10) || 0,
+        xpEarned: parseInt(data.xpEarned, 10) || 0,
+        streakDay: parseInt(data.streakDay, 10) || 0,
         metadata: data.metadata || {},
         
         // Server-generated
@@ -379,7 +379,7 @@ function rpcQuizGetHistory(ctx, logger, nk, payload) {
     }
     
     const collection = getResultsCollection(data.gameId);
-    const limit = Math.min(parseInt(data.limit) || 20, 100);
+    const limit = Math.min(parseInt(data.limit, 10) || 20, 100);
     
     try {
         // List storage objects for this user

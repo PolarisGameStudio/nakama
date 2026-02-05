@@ -172,7 +172,7 @@ function quizverseGrantCurrency(context, logger, nk, payload) {
     try {
         var data = parseAndValidateGamePayload(payload, ["gameID", "amount"]);
         var userId = getUserId(data, context);
-        var amount = parseInt(data.amount);
+        var amount = parseInt(data.amount, 10);
         
         if (isNaN(amount) || amount <= 0) {
             throw Error("Amount must be a positive number");
@@ -244,7 +244,7 @@ function quizverseSpendCurrency(context, logger, nk, payload) {
     try {
         var data = parseAndValidateGamePayload(payload, ["gameID", "amount"]);
         var userId = getUserId(data, context);
-        var amount = parseInt(data.amount);
+        var amount = parseInt(data.amount, 10);
         
         if (isNaN(amount) || amount <= 0) {
             throw Error("Amount must be a positive number");
@@ -320,7 +320,7 @@ function quizverseValidatePurchase(context, logger, nk, payload) {
     try {
         var data = parseAndValidateGamePayload(payload, ["gameID", "itemId", "price"]);
         var userId = getUserId(data, context);
-        var price = parseInt(data.price);
+        var price = parseInt(data.price, 10);
         
         if (isNaN(price) || price < 0) {
             throw Error("Invalid price");
@@ -440,7 +440,7 @@ function quizverseGrantItem(context, logger, nk, payload) {
     try {
         var data = parseAndValidateGamePayload(payload, ["gameID", "itemId", "quantity"]);
         var userId = getUserId(data, context);
-        var quantity = parseInt(data.quantity);
+        var quantity = parseInt(data.quantity, 10);
         
         if (isNaN(quantity) || quantity <= 0) {
             throw Error("Quantity must be a positive number");
@@ -531,7 +531,7 @@ function quizverseConsumeItem(context, logger, nk, payload) {
     try {
         var data = parseAndValidateGamePayload(payload, ["gameID", "itemId", "quantity"]);
         var userId = getUserId(data, context);
-        var quantity = parseInt(data.quantity);
+        var quantity = parseInt(data.quantity, 10);
         
         if (isNaN(quantity) || quantity <= 0) {
             throw Error("Quantity must be a positive number");
@@ -632,7 +632,7 @@ function quizverseSubmitScore(context, logger, nk, payload) {
     try {
         var data = parseAndValidateGamePayload(payload, ["gameID", "score"]);
         var userId = getUserId(data, context);
-        var score = parseInt(data.score);
+        var score = parseInt(data.score, 10);
         
         if (isNaN(score) || score < 0) {
             throw Error("Invalid score");
@@ -640,7 +640,7 @@ function quizverseSubmitScore(context, logger, nk, payload) {
         
         // QuizVerse-specific validation
         if (data.answersCount !== undefined) {
-            var answersCount = parseInt(data.answersCount);
+            var answersCount = parseInt(data.answersCount, 10);
             if (isNaN(answersCount) || answersCount < 0) {
                 throw Error("Invalid answers count");
             }
@@ -652,7 +652,7 @@ function quizverseSubmitScore(context, logger, nk, payload) {
         }
         
         if (data.completionTime !== undefined) {
-            var completionTime = parseInt(data.completionTime);
+            var completionTime = parseInt(data.completionTime, 10);
             if (isNaN(completionTime) || completionTime < 0) {
                 throw Error("Invalid completion time");
             }
@@ -751,11 +751,11 @@ function lasttoliveSubmitScore(context, logger, nk, payload) {
         var userId = getUserId(data, context);
         
         // LastToLive-specific validation
-        var kills = parseInt(data.kills || 0);
-        var timeSurvivedSec = parseInt(data.timeSurvivedSec || 0);
+        var kills = parseInt(data.kills || 0, 10);
+        var timeSurvivedSec = parseInt(data.timeSurvivedSec || 0, 10);
         var damageTaken = parseFloat(data.damageTaken || 0);
         var damageDealt = parseFloat(data.damageDealt || 0);
-        var reviveCount = parseInt(data.reviveCount || 0);
+        var reviveCount = parseInt(data.reviveCount || 0, 10);
         
         // Validate metrics
         if (isNaN(kills) || kills < 0) {

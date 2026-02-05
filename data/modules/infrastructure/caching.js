@@ -233,3 +233,19 @@ var rpcCacheClear = function(ctx, logger, nk, payload) {
 // Auto-cleanup expired entries every 5 minutes
 // In production, use Nakama scheduler or external cron
 // setInterval(cacheCleanup, 300000);
+
+// Export to globalThis for V8 runtime compatibility (PR #4)
+if (typeof globalThis !== 'undefined') {
+    globalThis.Caching = {
+        get: cacheGet,
+        set: cacheSet,
+        delete: cacheDelete,
+        clearByPattern: cacheClearByPattern,
+        cleanup: cacheCleanup,
+        withCache: withCache,
+        Config: CacheConfig,
+        KeyGenerators: CacheKeyGenerators,
+        rpcCacheStats: rpcCacheStats,
+        rpcCacheClear: rpcCacheClear
+    };
+}

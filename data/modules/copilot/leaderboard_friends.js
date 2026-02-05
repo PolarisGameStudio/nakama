@@ -117,7 +117,7 @@ function submitScoreWithFriendsSync(ctx, logger, nk, payload) {
         }
 
         const gameId = data.gameId;
-        const score = parseInt(data.score);
+        const score = parseInt(data.score, 10);
         
         if (isNaN(score)) {
             return utils.handleError(ctx, null, "Score must be a valid number");

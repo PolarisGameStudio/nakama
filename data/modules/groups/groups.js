@@ -180,7 +180,7 @@ function rpcUpdateGroupXP(ctx, logger, nk, payload) {
         }
 
         var groupId = data.groupId;
-        var xpToAdd = parseInt(data.xp);
+        var xpToAdd = parseInt(data.xp, 10);
 
         // Get group to verify it exists and get metadata
         var groups;
@@ -380,7 +380,7 @@ function rpcUpdateGroupWallet(ctx, logger, nk, payload) {
 
         var groupId = data.groupId;
         var currency = data.currency;
-        var amount = parseInt(data.amount);
+        var amount = parseInt(data.amount, 10);
         var operation = data.operation; // "add" or "subtract"
 
         // Verify user is admin of the group

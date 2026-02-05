@@ -373,7 +373,7 @@ function rpcSeasonPassAddXP(ctx, logger, nk, payload) {
     }
     
     var gameId = data.gameId;
-    var xpToAdd = parseInt(data.xp);
+    var xpToAdd = parseInt(data.xp, 10);
     var source = data.source || "unknown";
     
     var seasonInfo = getCurrentSeasonInfo();
@@ -544,7 +544,7 @@ function rpcSeasonPassClaimReward(ctx, logger, nk, payload) {
     }
     
     var gameId = data.gameId;
-    var level = parseInt(data.level);
+    var level = parseInt(data.level, 10);
     var track = data.track; // "free" or "premium"
     
     var passData = getSeasonPassData(nk, logger, ctx.userId, gameId);
@@ -639,7 +639,7 @@ function rpcSeasonPassPurchasePremium(ctx, logger, nk, payload) {
         success: true,
         isPremium: true,
         currentLevel: passData.level,
-        availablePremiumRewards: Object.keys(PREMIUM_REWARDS).filter(function(l) { return parseInt(l) <= passData.level; }),
+        availablePremiumRewards: Object.keys(PREMIUM_REWARDS).filter(function(l) { return parseInt(l, 10) <= passData.level; }),
         timestamp: new Date().toISOString()
     });
 }

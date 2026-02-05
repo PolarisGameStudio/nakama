@@ -28,7 +28,7 @@ function submitScoreWithAggregate(ctx, logger, nk, payload) {
         }
 
         const gameId = data.gameId;
-        const individualScore = parseInt(data.score);
+        const individualScore = parseInt(data.score, 10);
         
         if (isNaN(individualScore)) {
             return utils.handleError(ctx, null, "Score must be a valid number");

@@ -456,8 +456,8 @@ function rpcSubmitScoreToTimePeriods(ctx, logger, nk, payload) {
         }
 
         var gameId = data.gameId;
-        var score = parseInt(data.score);
-        var subscore = parseInt(data.subscore) || 0;
+        var score = parseInt(data.score, 10);
+        var subscore = parseInt(data.subscore, 10) || 0;
         var metadata = data.metadata || {};
 
         if (isNaN(score)) {
@@ -612,7 +612,7 @@ function rpcGetTimePeriodLeaderboard(ctx, logger, nk, payload) {
             leaderboardId = "leaderboard_" + data.gameId + "_" + period;
         }
 
-        var limit = parseInt(data.limit) || 10;
+        var limit = parseInt(data.limit, 10) || 10;
         var cursor = data.cursor || "";
         var ownerIds = data.ownerIds || null;
 
