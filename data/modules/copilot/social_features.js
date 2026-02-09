@@ -30,7 +30,51 @@ function sendFriendInvite(ctx, logger, nk, payload) {
         const targetUserId = data.targetUserId;
         const message = data.message || "You have a new friend request";
 
+        // EDGE CASE: Prevent self-invite
+        if (fromUserId === targetUserId) {
+            return utils.handleError(ctx, null, "Cannot send friend invite to yourself");
+        }
+
         utils.logInfo(logger, "User " + fromUsername + " sending friend invite to " + targetUserId);
+
+        // EDGE CASE: Check if already friends
+        try {
+            const friendsList = nk.friendsList(fromUserId, 100, null, null);
+            for (let i = 0; i < friendsList.friends.length; i++) {
+                if (friendsList.friends[i].user.id === targetUserId) {
+                    const state = friendsList.friends[i].state;
+                    if (state === 0) {
+                        return utils.handleError(ctx, null, "Already friends with this user");
+                    }
+                    if (state === 1) {
+                        return utils.handleError(ctx, null, "Friend request already sent");
+                    }
+                    if (state === 3) {
+                        return utils.handleError(ctx, null, "Cannot send invite to blocked user");
+                    }
+                    break;
+                }
+            }
+        } catch (err) {
+            utils.logWarn(logger, "Error checking friendship status: " + err.message);
+            // Continue anyway
+        }
+
+        // EDGE CASE: Check if blocked by target (optional - fail gracefully)
+        try {
+            const blockRecords = nk.storageRead([{
+                collection: "user_blocks",
+                key: "blocked_" + targetUserId + "_" + fromUserId,
+                userId: targetUserId
+            }]);
+            if (blockRecords && blockRecords.length > 0) {
+                return utils.handleError(ctx, null, "Cannot send invite to this user");
+            }
+        } catch (err) {
+            // Ignore - block check is best effort
+        }
+
+        // Store friend invite in storage
 
         // Store friend invite in storage
         const inviteId = fromUserId + "_" + targetUserId + "_" + Date.now();

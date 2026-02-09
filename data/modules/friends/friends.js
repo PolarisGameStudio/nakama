@@ -31,6 +31,36 @@ function rpcFriendsBlock(ctx, logger, nk, payload) {
     
     var targetUserId = data.targetUserId;
     
+    // EDGE CASE: Prevent self-blocking
+    if (userId === targetUserId) {
+        return utils.handleError(ctx, null, "Cannot block yourself");
+    }
+    
+    // EDGE CASE: Check if already blocked
+    var existingBlock = null;
+    try {
+        var records = nk.storageRead([{
+            collection: "user_blocks",
+            key: "blocked_" + userId + "_" + targetUserId,
+            userId: userId
+        }]);
+        if (records && records.length > 0) {
+            existingBlock = records[0];
+        }
+    } catch (err) {
+        utils.logWarn(logger, "Error checking existing block: " + err.message);
+    }
+    
+    if (existingBlock) {
+        return JSON.stringify({
+            success: true,
+            userId: userId,
+            blockedUserId: targetUserId,
+            blockedAt: existingBlock.value.blockedAt,
+            alreadyBlocked: true
+        });
+    }
+    
     // Store block relationship
     var collection = "user_blocks";
     var key = "blocked_" + userId + "_" + targetUserId;
@@ -236,6 +266,32 @@ function rpcFriendsChallengeUser(ctx, logger, nk, payload) {
     }
     
     var friendUserId = data.friendUserId;
+    
+    // EDGE CASE: Prevent self-challenge
+    if (userId === friendUserId) {
+        return utils.handleError(ctx, null, "Cannot challenge yourself");
+    }
+    
+    // EDGE CASE: Verify friendship exists (mutual friends only)
+    var isFriend = false;
+    try {
+        var friendsList = nk.friendsList(userId, 100, null, null);
+        for (var i = 0; i < friendsList.friends.length; i++) {
+            if (friendsList.friends[i].user.id === friendUserId && friendsList.friends[i].state === 0) {
+                isFriend = true;
+                break;
+            }
+        }
+    } catch (err) {
+        utils.logWarn(logger, "Error verifying friendship: " + err.message);
+        // Continue anyway - challenge will still work but notification may not be meaningful
+    }
+    
+    if (!isFriend) {
+        utils.logWarn(logger, "Challenge sent to non-friend: " + friendUserId);
+        // Allow challenge but log warning (user may have pending request)
+    }
+    
     var challengeData = data.challengeData || {};
     
     // Create challenge
