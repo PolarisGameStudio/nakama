@@ -5976,7 +5976,8 @@ function getFriendLeaderboard(ctx, logger, nk, payload) {
         try {
             const leaderboardRecords = nk.leaderboardRecordsList(leaderboardId, friends, limit, null, 0);
             if (leaderboardRecords && leaderboardRecords.records) {
-                records = leaderboardRecords.records;
+                // Enrich records with user profile data (avatar, displayName, online status)
+                records = enrichLeaderboardRecordsWithProfiles(nk, logger, leaderboardRecords.records);
             }
             logInfo(logger, "Retrieved " + records.length + " friend records");
         } catch (err) {
@@ -8888,9 +8889,14 @@ function rpcFriendsList(ctx, logger, nk, payload) {
             friends.push({
                 userId: friend.user.id,
                 username: friend.user.username,
-                displayName: friend.user.displayName,
+                displayName: friend.user.displayName || friend.user.username,
+                avatarUrl: friend.user.avatarUrl || "",
                 online: friend.user.online,
-                state: friend.state
+                langTag: friend.user.langTag || "en",
+                location: friend.user.location || "",
+                timezone: friend.user.timezone || "",
+                state: friend.state,
+                updateTime: friend.updateTime || ""
             });
         }
     } catch (err) {
@@ -10533,6 +10539,257 @@ function rpcPushGetEndpoints(ctx, logger, nk, payload) {
 // Export RPC functions (ES Module syntax)
 
 // ============================================================================
+// LEADERBOARD USER PROFILE ENRICHMENT
+// ============================================================================
+// Production-ready helper to enrich leaderboard records with user profile data
+// including avatar URLs, display names, and online status.
+// Optimized for performance with batch user lookups and caching.
+
+/**
+ * User profile cache (in-memory) for performance
+ * Key: userId, Value: { avatarUrl, displayName, online, cachedAt }
+ */
+var USER_PROFILE_CACHE = {};
+var USER_PROFILE_CACHE_TTL = 300000; // 5 minutes cache TTL
+
+/**
+ * Batch fetch user profiles by IDs (optimized)
+ * @param {object} nk - Nakama runtime
+ * @param {object} logger - Logger instance
+ * @param {string[]} userIds - Array of user IDs to fetch
+ * @returns {object} Map of userId -> user profile
+ */
+function batchGetUserProfiles(nk, logger, userIds) {
+    if (!userIds || userIds.length === 0) {
+        return {};
+    }
+    
+    var now = Date.now();
+    var profileMap = {};
+    var uncachedIds = [];
+    
+    // Check cache first
+    for (var i = 0; i < userIds.length; i++) {
+        var userId = userIds[i];
+        if (!userId) continue;
+        
+        var cached = USER_PROFILE_CACHE[userId];
+        if (cached && (now - cached.cachedAt) < USER_PROFILE_CACHE_TTL) {
+            profileMap[userId] = cached;
+        } else {
+            uncachedIds.push(userId);
+        }
+    }
+    
+    // Fetch uncached profiles in batch
+    if (uncachedIds.length > 0) {
+        try {
+            // Use nk.accountsGetId for batch lookup (returns Account objects)
+            var accounts = nk.accountsGetId(uncachedIds);
+            
+            if (accounts && accounts.length > 0) {
+                for (var j = 0; j < accounts.length; j++) {
+                    var account = accounts[j];
+                    if (account && account.user) {
+                        var user = account.user;
+                        var profile = {
+                            avatarUrl: user.avatarUrl || "",
+                            displayName: user.displayName || user.username || "",
+                            username: user.username || "",
+                            online: user.online || false,
+                            langTag: user.langTag || "en",
+                            location: user.location || "",
+                            timezone: user.timezone || "",
+                            metadata: user.metadata || "{}",
+                            cachedAt: now
+                        };
+                        profileMap[user.id] = profile;
+                        USER_PROFILE_CACHE[user.id] = profile;
+                    }
+                }
+            }
+            
+            logger.debug("[LeaderboardEnrich] Fetched " + accounts.length + " user profiles, cache hit: " + (userIds.length - uncachedIds.length));
+        } catch (err) {
+            logger.warn("[LeaderboardEnrich] Failed to batch fetch user profiles: " + err.message);
+        }
+    }
+    
+    return profileMap;
+}
+
+/**
+ * Enrich leaderboard records with user profile data (avatar, displayName, etc.)
+ * @param {object} nk - Nakama runtime
+ * @param {object} logger - Logger instance
+ * @param {array} records - Array of leaderboard records from nk.leaderboardRecordsList
+ * @returns {array} Enriched records with user profile data
+ */
+function enrichLeaderboardRecordsWithProfiles(nk, logger, records) {
+    if (!records || records.length === 0) {
+        return [];
+    }
+    
+    // Collect all unique user IDs
+    var userIdSet = {};
+    var userIds = [];
+    
+    for (var i = 0; i < records.length; i++) {
+        var record = records[i];
+        var ownerId = record.ownerId;
+        if (ownerId && !userIdSet[ownerId]) {
+            userIdSet[ownerId] = true;
+            userIds.push(ownerId);
+        }
+    }
+    
+    // Batch fetch all user profiles
+    var profileMap = batchGetUserProfiles(nk, logger, userIds);
+    
+    // Enrich records with profile data
+    var enrichedRecords = [];
+    
+    for (var j = 0; j < records.length; j++) {
+        var rec = records[j];
+        var profile = profileMap[rec.ownerId] || {};
+        
+        enrichedRecords.push({
+            // Core leaderboard fields
+            leaderboardId: rec.leaderboardId || "",
+            ownerId: rec.ownerId,
+            rank: rec.rank,
+            score: rec.score,
+            subscore: rec.subscore || 0,
+            numScore: rec.numScore || 1,
+            maxNumScore: rec.maxNumScore || 0,
+            metadata: rec.metadata || "{}",
+            createTime: rec.createTime,
+            updateTime: rec.updateTime,
+            expiryTime: rec.expiryTime || "",
+            
+            // User profile fields (enriched)
+            username: rec.username || profile.username || "",
+            displayName: profile.displayName || rec.username || "",
+            avatarUrl: profile.avatarUrl || "",
+            online: profile.online || false,
+            
+            // Additional profile info (optional)
+            langTag: profile.langTag || "en",
+            location: profile.location || "",
+            timezone: profile.timezone || ""
+        });
+    }
+    
+    logger.info("[LeaderboardEnrich] Enriched " + enrichedRecords.length + " records with user profiles");
+    return enrichedRecords;
+}
+
+/**
+ * Clear user profile cache (call periodically or on user updates)
+ * @param {string} userId - Optional: clear specific user; if null, clear all
+ */
+function clearUserProfileCache(userId) {
+    if (userId) {
+        delete USER_PROFILE_CACHE[userId];
+    } else {
+        USER_PROFILE_CACHE = {};
+    }
+}
+
+/**
+ * Enrich session data (compatibility quiz, async challenge) with user avatars
+ * Works with sessions that have playerA/playerB structure
+ * @param {object} nk - Nakama runtime
+ * @param {object} logger - Logger instance
+ * @param {array} sessions - Array of formatted sessions
+ * @returns {array} Sessions enriched with avatar URLs
+ */
+function enrichSessionsWithAvatars(nk, logger, sessions) {
+    if (!sessions || sessions.length === 0) {
+        return sessions;
+    }
+    
+    // Collect all unique user IDs from sessions
+    var userIdSet = {};
+    var userIds = [];
+    
+    for (var i = 0; i < sessions.length; i++) {
+        var session = sessions[i];
+        
+        // PlayerA
+        if (session.playerA && session.playerA.userId) {
+            if (!userIdSet[session.playerA.userId]) {
+                userIdSet[session.playerA.userId] = true;
+                userIds.push(session.playerA.userId);
+            }
+        }
+        
+        // PlayerB
+        if (session.playerB && session.playerB.userId) {
+            if (!userIdSet[session.playerB.userId]) {
+                userIdSet[session.playerB.userId] = true;
+                userIds.push(session.playerB.userId);
+            }
+        }
+    }
+    
+    // Batch fetch all user profiles
+    var profileMap = batchGetUserProfiles(nk, logger, userIds);
+    
+    // Enrich sessions with avatar data
+    for (var j = 0; j < sessions.length; j++) {
+        var sess = sessions[j];
+        
+        // Enrich PlayerA
+        if (sess.playerA && sess.playerA.userId) {
+            var profileA = profileMap[sess.playerA.userId];
+            if (profileA) {
+                sess.playerA.avatarUrl = profileA.avatarUrl || sess.playerA.avatarUrl || '';
+                sess.playerA.displayName = sess.playerA.displayName || profileA.displayName || profileA.username || 'Player';
+            }
+        }
+        
+        // Enrich PlayerB
+        if (sess.playerB && sess.playerB.userId) {
+            var profileB = profileMap[sess.playerB.userId];
+            if (profileB) {
+                sess.playerB.avatarUrl = profileB.avatarUrl || sess.playerB.avatarUrl || '';
+                sess.playerB.displayName = sess.playerB.displayName || profileB.displayName || profileB.username || 'Player';
+            }
+        }
+    }
+    
+    logger.debug("[SessionEnrich] Enriched " + sessions.length + " sessions with user avatars");
+    return sessions;
+}
+
+/**
+ * Enrich a single session with user avatars (for single session returns)
+ * @param {object} nk - Nakama runtime
+ * @param {object} logger - Logger instance
+ * @param {object} session - Single formatted session
+ * @returns {object} Session enriched with avatar URLs
+ */
+function enrichSingleSessionWithAvatars(nk, logger, session) {
+    if (!session) return session;
+    var enriched = enrichSessionsWithAvatars(nk, logger, [session]);
+    return enriched[0];
+}
+
+// Export to globalThis for use across modules
+if (typeof globalThis !== 'undefined') {
+    globalThis.LeaderboardEnrich = {
+        batchGetUserProfiles: batchGetUserProfiles,
+        enrichRecords: enrichLeaderboardRecordsWithProfiles,
+        clearCache: clearUserProfileCache
+    };
+    globalThis.SessionEnrich = {
+        enrichSessions: enrichSessionsWithAvatars,
+        enrichSingle: enrichSingleSessionWithAvatars
+    };
+}
+
+// ============================================================================
 // LEADERBOARDS_TIMEPERIOD.JS
 // ============================================================================
 
@@ -11174,14 +11431,18 @@ function rpcGetTimePeriodLeaderboard(ctx, logger, nk, payload) {
         try {
             var result = nk.leaderboardRecordsList(leaderboardId, ownerIds, limit, cursor, 0);
 
+            // Enrich records with user profile data (avatar, displayName, online status)
+            var enrichedRecords = enrichLeaderboardRecordsWithProfiles(nk, logger, result.records || []);
+            var enrichedOwnerRecords = enrichLeaderboardRecordsWithProfiles(nk, logger, result.ownerRecords || []);
+
             return JSON.stringify({
                 success: true,
                 leaderboardId: leaderboardId,
                 period: period,
                 gameId: data.gameId,
                 scope: data.scope || "game",
-                records: result.records || [],
-                ownerRecords: result.ownerRecords || [],
+                records: enrichedRecords,
+                ownerRecords: enrichedOwnerRecords,
                 prevCursor: result.prevCursor || "",
                 nextCursor: result.nextCursor || "",
                 rankCount: result.rankCount || 0
@@ -13238,16 +13499,20 @@ function getAllLeaderboards(ctx, logger, nk, payload) {
                     logger.warn("[NAKAMA] Failed to get user record from " + leaderboardId + ": " + err.message);
                 }
 
+                // Enrich records with user profile data (avatar, displayName, online status)
+                var enrichedRecords = enrichLeaderboardRecordsWithProfiles(nk, logger, leaderboardRecords.records || []);
+                var enrichedUserRecord = userRecord ? enrichLeaderboardRecordsWithProfiles(nk, logger, [userRecord])[0] : null;
+
                 leaderboards[leaderboardId] = {
                     leaderboard_id: leaderboardId,
-                    records: leaderboardRecords.records || [],
-                    user_record: userRecord,
+                    records: enrichedRecords,
+                    user_record: enrichedUserRecord,
                     next_cursor: leaderboardRecords.nextCursor || "",
                     prev_cursor: leaderboardRecords.prevCursor || ""
                 };
 
                 successCount++;
-                logger.info("[NAKAMA] Retrieved " + leaderboardRecords.records.length + " records from " + leaderboardId);
+                logger.info("[NAKAMA] Retrieved " + enrichedRecords.length + " records from " + leaderboardId);
             } catch (err) {
                 logger.warn("[NAKAMA] Failed to query leaderboard " + leaderboardId + ": " + err.message);
                 leaderboards[leaderboardId] = {
@@ -13341,21 +13606,25 @@ function rpcQuizVerseGetLeaderboard(context, logger, nk, payload) {
 
         var records = nk.leaderboardRecordsList(leaderboardId, ownerIds, limit, cursor, 0);
 
+        // Enrich records with user profile data (avatar, displayName, online status)
+        var enrichedRecords = enrichLeaderboardRecordsWithProfiles(nk, logger, records.records || []);
+
         var transformedRecords = [];
-        if (records && records.records) {
-            for (var i = 0; i < records.records.length; i++) {
-                var record = records.records[i];
-                transformedRecords.push({
-                    user_id: record.ownerId,
-                    username: record.username || "Unknown",
-                    score: record.score,
-                    subscore: record.subscore,
-                    rank: record.rank,
-                    metadata: record.metadata || {},
-                    create_time: record.createTime,
-                    update_time: record.updateTime
-                });
-            }
+        for (var i = 0; i < enrichedRecords.length; i++) {
+            var record = enrichedRecords[i];
+            transformedRecords.push({
+                user_id: record.ownerId,
+                username: record.username || "Unknown",
+                display_name: record.displayName || record.username || "Unknown",
+                avatar_url: record.avatarUrl || "",
+                online: record.online || false,
+                score: record.score,
+                subscore: record.subscore,
+                rank: record.rank,
+                metadata: record.metadata || {},
+                create_time: record.createTime,
+                update_time: record.updateTime
+            });
         }
 
         logger.info("[QuizVerse-MP] ✓ Fetched " + transformedRecords.length + " records");
@@ -16830,11 +17099,14 @@ function quizverseGetLeaderboard(context, logger, nk, payload) {
         // Get leaderboard records
         var records = nk.leaderboardRecordsList(leaderboardId, null, limit, null, 0);
 
+        // Enrich records with user profile data (avatar, displayName, online status)
+        var enrichedRecords = enrichLeaderboardRecordsWithProfiles(nk, logger, records.records || []);
+
         return JSON.stringify({
             success: true,
             data: {
                 leaderboardId: leaderboardId,
-                records: records.records || []
+                records: enrichedRecords
             }
         });
 
@@ -16972,11 +17244,14 @@ function lasttoliveGetLeaderboard(context, logger, nk, payload) {
         // Get leaderboard records
         var records = nk.leaderboardRecordsList(leaderboardId, null, limit, null, 0);
 
+        // Enrich records with user profile data (avatar, displayName, online status)
+        var enrichedRecords = enrichLeaderboardRecordsWithProfiles(nk, logger, records.records || []);
+
         return JSON.stringify({
             success: true,
             data: {
                 leaderboardId: leaderboardId,
-                records: records.records || []
+                records: enrichedRecords
             }
         });
 
@@ -21908,6 +22183,7 @@ function compatibilitySessionToUnityFormat(session) {
         playerA: {
             userId: session.creatorId || '',
             displayName: session.creatorName || 'Player A',
+            avatarUrl: session.creatorAvatarUrl || '',
             isComplete: session.creatorCompleted || false,
             answers: session.creatorAnswers || [],
             traitScores: session.creatorTraitScores || {},
@@ -21919,6 +22195,7 @@ function compatibilitySessionToUnityFormat(session) {
         playerB: session.partnerId ? {
             userId: session.partnerId || '',
             displayName: session.partnerName || 'Player B',
+            avatarUrl: session.partnerAvatarUrl || '',
             isComplete: session.partnerCompleted || false,
             answers: session.partnerAnswers || [],
             traitScores: session.partnerTraitScores || {},
@@ -22401,10 +22678,14 @@ function rpcCompatibilityJoinSession(ctx, logger, nk, payload) {
         
         logger.info('[CompatibilityQuiz] User ' + userId + ' joined session ' + sessionId);
         
+        // Format and enrich with avatar URLs
+        var formattedSession = compatibilitySessionToUnityFormat(session);
+        formattedSession = enrichSingleSessionWithAvatars(nk, logger, formattedSession);
+        
         return JSON.stringify({
             success: true,
             message: 'Successfully joined session',
-            data: compatibilitySessionToUnityFormat(session)
+            data: formattedSession
         });
     } catch (err) {
         logger.error('[CompatibilityQuiz] Join session error: ' + err.message);
@@ -22482,10 +22763,14 @@ function rpcCompatibilityGetSession(ctx, logger, nk, payload) {
             return JSON.stringify({ success: false, message: 'Not authorized to view this session', data: null });
         }
         
+        // Format and enrich with avatar URLs
+        var formattedSession = compatibilitySessionToUnityFormat(session);
+        formattedSession = enrichSingleSessionWithAvatars(nk, logger, formattedSession);
+        
         return JSON.stringify({
             success: true,
             message: 'Session retrieved',
-            data: compatibilitySessionToUnityFormat(session)
+            data: formattedSession
         });
     } catch (err) {
         logger.error('[CompatibilityQuiz] Get session error: ' + err.message);
@@ -22624,10 +22909,14 @@ function rpcCompatibilitySubmitAnswers(ctx, logger, nk, payload) {
         
         logger.info('[CompatibilityQuiz] Answers submitted for session ' + sessionId);
         
+        // Format and enrich with avatar URLs
+        var formattedSession = compatibilitySessionToUnityFormat(session);
+        formattedSession = enrichSingleSessionWithAvatars(nk, logger, formattedSession);
+        
         return JSON.stringify({
             success: true,
             message: 'Answers submitted successfully',
-            data: compatibilitySessionToUnityFormat(session)
+            data: formattedSession
         });
     } catch (err) {
         logger.error('[CompatibilityQuiz] Submit answers error: ' + err.message);
@@ -22709,10 +22998,12 @@ function rpcCompatibilityCalculate(ctx, logger, nk, payload) {
         // If already calculated, return cached result
         if (session.compatibilityResult) {
             session.status = 2; // BothCompleted
+            var cachedSession = compatibilitySessionToUnityFormat(session);
+            cachedSession = enrichSingleSessionWithAvatars(nk, logger, cachedSession);
             return JSON.stringify({
                 success: true,
                 message: 'Compatibility result retrieved',
-                data: compatibilitySessionToUnityFormat(session)
+                data: cachedSession
             });
         }
         
@@ -22753,10 +23044,14 @@ function rpcCompatibilityCalculate(ctx, logger, nk, payload) {
         
         logger.info('[CompatibilityQuiz] Compatibility calculated: ' + result.score + '%');
         
+        // Format and enrich with avatar URLs
+        var calculatedSession = compatibilitySessionToUnityFormat(session);
+        calculatedSession = enrichSingleSessionWithAvatars(nk, logger, calculatedSession);
+        
         return JSON.stringify({
             success: true,
             message: 'Compatibility calculated',
-            data: compatibilitySessionToUnityFormat(session)
+            data: calculatedSession
         });
     } catch (err) {
         logger.error('[CompatibilityQuiz] Calculate error: ' + err.message);
@@ -22818,6 +23113,9 @@ function rpcCompatibilityListSessions(ctx, logger, nk, payload) {
             
             sessions.push(compatibilitySessionToUnityFormat(session));
         }
+        
+        // Enrich sessions with avatar URLs
+        sessions = enrichSessionsWithAvatars(nk, logger, sessions);
         
         return JSON.stringify({
             success: true,
@@ -22910,6 +23208,7 @@ function asyncChallengeToUnityFormat(session) {
         playerA: {
             userId: session.creatorId || '',
             displayName: session.creatorName || 'Player',
+            avatarUrl: session.creatorAvatarUrl || '',
             isComplete: session.creatorResult ? session.creatorResult.isComplete : false,
             score: session.creatorResult ? (session.creatorResult.score || 0) : 0,
             correctAnswers: session.creatorResult ? (session.creatorResult.correctAnswers || 0) : 0,
@@ -22921,6 +23220,7 @@ function asyncChallengeToUnityFormat(session) {
         playerB: session.opponentId ? {
             userId: session.opponentId || '',
             displayName: session.opponentName || 'Player',
+            avatarUrl: session.opponentAvatarUrl || '',
             isComplete: session.opponentResult ? session.opponentResult.isComplete : false,
             score: session.opponentResult ? (session.opponentResult.score || 0) : 0,
             correctAnswers: session.opponentResult ? (session.opponentResult.correctAnswers || 0) : 0,
@@ -23170,10 +23470,14 @@ function rpcAsyncChallengeCreate(ctx, logger, nk, payload) {
             );
         }
 
+        // Format and enrich with avatar URLs
+        var formattedChallenge = asyncChallengeToUnityFormat(sessionStorage);
+        formattedChallenge = enrichSingleSessionWithAvatars(nk, logger, formattedChallenge);
+        
         return JSON.stringify({
             success: true,
             message: 'Challenge created successfully',
-            data: asyncChallengeToUnityFormat(sessionStorage)
+            data: formattedChallenge
         });
     } catch (err) {
         logger.error('[AsyncChallenge] Create error: ' + err.message);
@@ -23305,10 +23609,14 @@ function rpcAsyncChallengeJoin(ctx, logger, nk, payload) {
 
         logger.info('[AsyncChallenge] User ' + userId + ' joined challenge ' + sessionId);
 
+        // Format and enrich with avatar URLs
+        var formattedSession = asyncChallengeToUnityFormat(session);
+        formattedSession = enrichSingleSessionWithAvatars(nk, logger, formattedSession);
+
         return JSON.stringify({
             success: true,
             message: 'Successfully joined challenge',
-            data: asyncChallengeToUnityFormat(session)
+            data: formattedSession
         });
     } catch (err) {
         logger.error('[AsyncChallenge] Join error: ' + err.message);
@@ -23408,10 +23716,14 @@ function rpcAsyncChallengeGet(ctx, logger, nk, payload) {
             return JSON.stringify({ success: false, message: 'Not authorized to view this challenge', data: null });
         }
 
+        // Format and enrich with avatar URLs
+        var formattedSession = asyncChallengeToUnityFormat(session);
+        formattedSession = enrichSingleSessionWithAvatars(nk, logger, formattedSession);
+
         return JSON.stringify({
             success: true,
             message: 'Challenge retrieved',
-            data: asyncChallengeToUnityFormat(session)
+            data: formattedSession
         });
     } catch (err) {
         logger.error('[AsyncChallenge] Get error: ' + err.message);
@@ -23639,10 +23951,14 @@ function rpcAsyncChallengeSubmit(ctx, logger, nk, payload) {
 
         logger.info('[AsyncChallenge] Results submitted for session ' + sessionId + ' by ' + (isCreator ? 'creator' : 'opponent'));
 
+        // Format and enrich with avatar URLs
+        var formattedResult = asyncChallengeToUnityFormat(session);
+        formattedResult = enrichSingleSessionWithAvatars(nk, logger, formattedResult);
+
         return JSON.stringify({
             success: true,
             message: session.status === 2 ? 'Results submitted! Challenge complete!' : 'Results submitted successfully',
-            data: asyncChallengeToUnityFormat(session)
+            data: formattedResult
         });
     } catch (err) {
         logger.error('[AsyncChallenge] Submit error: ' + err.message);
@@ -23733,6 +24049,9 @@ function rpcAsyncChallengeList(ctx, logger, nk, payload) {
             sessions = sessions.slice(0, limit);
         }
 
+        // Enrich sessions with avatar URLs
+        sessions = enrichSessionsWithAvatars(nk, logger, sessions);
+
         return JSON.stringify({
             success: true,
             message: 'Challenges retrieved',
@@ -23820,10 +24139,14 @@ function rpcAsyncChallengeCancel(ctx, logger, nk, payload) {
 
         logger.info('[AsyncChallenge] Session ' + sessionId + ' cancelled by creator');
 
+        // Format and enrich with avatar URLs
+        var cancelledSession = asyncChallengeToUnityFormat(session);
+        cancelledSession = enrichSingleSessionWithAvatars(nk, logger, cancelledSession);
+
         return JSON.stringify({
             success: true,
             message: 'Challenge cancelled',
-            data: asyncChallengeToUnityFormat(session)
+            data: cancelledSession
         });
     } catch (err) {
         logger.error('[AsyncChallenge] Cancel error: ' + err.message);
@@ -27084,17 +27407,22 @@ function rpcDailyChallengeGetLeaderboard(ctx, logger, nk, payload) {
         
         try {
             var records = nk.leaderboardRecordsList(leaderboardId, null, limit, null, 0);
-            if (records && records.records) {
-                for (var i = 0; i < records.records.length; i++) {
-                    var record = records.records[i];
-                    leaderboard.push({
-                        rank: record.rank,
-                        userId: record.ownerId,
-                        username: record.username ? record.username.value : 'Unknown',
-                        score: record.score,
-                        updatedAt: record.updateTime
-                    });
-                }
+            
+            // Enrich records with user profile data (avatar, displayName, online status)
+            var enrichedRecords = enrichLeaderboardRecordsWithProfiles(nk, logger, records.records || []);
+            
+            for (var i = 0; i < enrichedRecords.length; i++) {
+                var record = enrichedRecords[i];
+                leaderboard.push({
+                    rank: record.rank,
+                    userId: record.ownerId,
+                    username: record.username || 'Unknown',
+                    displayName: record.displayName || record.username || 'Unknown',
+                    avatarUrl: record.avatarUrl || '',
+                    online: record.online || false,
+                    score: record.score,
+                    updatedAt: record.updateTime
+                });
             }
         } catch (lbErr) {
             logger.warn('[DailyChallenge] Leaderboard not found or error: ' + lbErr.message);
@@ -27108,10 +27436,16 @@ function rpcDailyChallengeGetLeaderboard(ctx, logger, nk, payload) {
                 var userRecords = nk.leaderboardRecordsList(leaderboardId, [userId], 1, null, 0);
                 if (userRecords && userRecords.ownerRecords && userRecords.ownerRecords.length > 0) {
                     var ur = userRecords.ownerRecords[0];
+                    
+                    // Enrich user's own record too
+                    var enrichedUserRecord = enrichLeaderboardRecordsWithProfiles(nk, logger, [ur])[0] || {};
+                    
                     userRank = {
                         rank: ur.rank,
                         score: ur.score,
-                        updatedAt: ur.updateTime
+                        updatedAt: ur.updateTime,
+                        avatarUrl: enrichedUserRecord.avatarUrl || '',
+                        displayName: enrichedUserRecord.displayName || ''
                     };
                 }
             } catch (e) {
