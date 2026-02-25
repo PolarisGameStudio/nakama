@@ -8099,16 +8099,27 @@ function rpcWalletUpdateGlobal(ctx, logger, nk, payload) {
 
     // PR #6: CRITICAL - Validate and sanitize amount (reject negative)
     var amountValidation;
-    if (typeof globalThis !== 'undefined' && globalThis.Security) {
-        amountValidation = globalThis.Security.validateWalletAmount(data.amount, operation);
-        if (!amountValidation.valid) {
-            return JSON.stringify({
-                success: false,
-                error: amountValidation.error,
-                errorCode: 'INVALID_AMOUNT'
-            });
+    if (
+        typeof globalThis !== 'undefined' &&
+        globalThis.Security &&
+        typeof globalThis.Security.validateWalletAmount === 'function'
+    ) {
+        try {
+            amountValidation = globalThis.Security.validateWalletAmount(data.amount, operation);
+            if (!amountValidation || !amountValidation.valid) {
+                return JSON.stringify({
+                    success: false,
+                    error: (amountValidation && amountValidation.error) ? amountValidation.error : 'Invalid wallet amount',
+                    errorCode: 'INVALID_AMOUNT'
+                });
+            }
+        } catch (validationErr) {
+            logger.warn('[Wallet] wallet_update_global validateWalletAmount failed, using fallback validation: ' + validationErr.message);
+            amountValidation = null;
         }
-    } else {
+    }
+
+    if (!amountValidation) {
         // Fallback validation
         var amount = Math.abs(Number(data.amount));
         if (isNaN(amount) || amount <= 0) {
@@ -8121,29 +8132,38 @@ function rpcWalletUpdateGlobal(ctx, logger, nk, payload) {
     var reason = data.reason || 'wallet_update';
 
     // PR #6: Use secure wallet update with version checking
-    if (typeof globalThis !== 'undefined' && globalThis.Security) {
-        var result = globalThis.Security.secureWalletUpdate(
-            nk, logger, userId, null, // null gameId = global wallet
-            currency, amount, operation, reason
-        );
+    if (
+        typeof globalThis !== 'undefined' &&
+        globalThis.Security &&
+        typeof globalThis.Security.secureWalletUpdate === 'function'
+    ) {
+        try {
+            var result = globalThis.Security.secureWalletUpdate(
+                nk, logger, userId, null, // null gameId = global wallet
+                currency, amount, operation, reason
+            );
 
-        if (!result.success) {
+            if (!result || !result.success) {
+                var secureError = (result && result.error) ? String(result.error) : 'Global wallet update failed';
+                return JSON.stringify({
+                    success: false,
+                    error: secureError,
+                    errorCode: secureError.indexOf('Insufficient') !== -1 ? 'INSUFFICIENT_BALANCE' : 'WALLET_ERROR'
+                });
+            }
+
             return JSON.stringify({
-                success: false,
-                error: result.error,
-                errorCode: result.error.indexOf('Insufficient') !== -1 ? 'INSUFFICIENT_BALANCE' : 'WALLET_ERROR'
+                success: true,
+                userId: userId,
+                currency: currency,
+                oldBalance: result.oldBalance,
+                newBalance: result.newBalance,
+                transactionId: result.transactionId,
+                timestamp: getCurrentTimestamp()
             });
+        } catch (secureErr) {
+            logger.warn('[Wallet] wallet_update_global secureWalletUpdate failed, falling back: ' + secureErr.message);
         }
-
-        return JSON.stringify({
-            success: true,
-            userId: userId,
-            currency: currency,
-            oldBalance: result.oldBalance,
-            newBalance: result.newBalance,
-            transactionId: result.transactionId,
-            timestamp: getCurrentTimestamp()
-        });
     }
 
     // Fallback to original logic (with amount now validated)
@@ -8240,16 +8260,27 @@ function rpcWalletUpdateGameWallet(ctx, logger, nk, payload) {
 
     // PR #6: CRITICAL - Validate and sanitize amount (reject negative)
     var amountValidation;
-    if (typeof globalThis !== 'undefined' && globalThis.Security) {
-        amountValidation = globalThis.Security.validateWalletAmount(data.amount, operation);
-        if (!amountValidation.valid) {
-            return JSON.stringify({
-                success: false,
-                error: amountValidation.error,
-                errorCode: 'INVALID_AMOUNT'
-            });
+    if (
+        typeof globalThis !== 'undefined' &&
+        globalThis.Security &&
+        typeof globalThis.Security.validateWalletAmount === 'function'
+    ) {
+        try {
+            amountValidation = globalThis.Security.validateWalletAmount(data.amount, operation);
+            if (!amountValidation || !amountValidation.valid) {
+                return JSON.stringify({
+                    success: false,
+                    error: (amountValidation && amountValidation.error) ? amountValidation.error : 'Invalid wallet amount',
+                    errorCode: 'INVALID_AMOUNT'
+                });
+            }
+        } catch (validationErr) {
+            logger.warn('[Wallet] wallet_update_game_wallet validateWalletAmount failed, using fallback validation: ' + validationErr.message);
+            amountValidation = null;
         }
-    } else {
+    }
+
+    if (!amountValidation) {
         // Fallback validation
         var rawAmount = Math.abs(Number(data.amount));
         if (isNaN(rawAmount) || rawAmount <= 0) {
@@ -8262,32 +8293,41 @@ function rpcWalletUpdateGameWallet(ctx, logger, nk, payload) {
     var reason = data.reason || 'game_wallet_update';
 
     // PR #6: Use secure wallet update with version checking
-    if (typeof globalThis !== 'undefined' && globalThis.Security) {
-        var result = globalThis.Security.secureWalletUpdate(
-            nk, logger, userId, gameId,
-            currency, amount, operation, reason
-        );
+    if (
+        typeof globalThis !== 'undefined' &&
+        globalThis.Security &&
+        typeof globalThis.Security.secureWalletUpdate === 'function'
+    ) {
+        try {
+            var result = globalThis.Security.secureWalletUpdate(
+                nk, logger, userId, gameId,
+                currency, amount, operation, reason
+            );
 
-        if (!result.success) {
+            if (!result || !result.success) {
+                var secureError = (result && result.error) ? String(result.error) : 'Wallet update failed';
+                return JSON.stringify({
+                    success: false,
+                    error: secureError,
+                    errorCode: secureError.indexOf('Insufficient') !== -1 ? 'INSUFFICIENT_BALANCE' : 'WALLET_ERROR'
+                });
+            }
+
             return JSON.stringify({
-                success: false,
-                error: result.error,
-                errorCode: result.error.indexOf('Insufficient') !== -1 ? 'INSUFFICIENT_BALANCE' : 'WALLET_ERROR'
+                success: true,
+                userId: userId,
+                gameId: gameId,
+                currency: currency,
+                oldBalance: result.oldBalance,
+                newBalance: result.newBalance,
+                transactionId: result.transactionId,
+                game_balance: result.wallet.currencies.game || 0,
+                currencies: result.wallet.currencies,
+                timestamp: getCurrentTimestamp()
             });
+        } catch (secureErr) {
+            logger.warn('[Wallet] wallet_update_game_wallet secureWalletUpdate failed, falling back: ' + secureErr.message);
         }
-
-        return JSON.stringify({
-            success: true,
-            userId: userId,
-            gameId: gameId,
-            currency: currency,
-            oldBalance: result.oldBalance,
-            newBalance: result.newBalance,
-            transactionId: result.transactionId,
-            game_balance: result.wallet.currencies.game || 0,
-            currencies: result.wallet.currencies,
-            timestamp: getCurrentTimestamp()
-        });
     }
 
     // Fallback to original logic (with amount now validated)
