@@ -8042,14 +8042,17 @@ function rpcWalletGetAll(ctx, logger, nk, payload) {
     // Get all game wallets
     var gameWallets = [];
     try {
-        var records = nk.storageList(userId, "wallets", 100);
-        for (var i = 0; i < records.length; i++) {
-            if (records[i].key.indexOf("wallet_" + userId + "_") === 0) {
-                gameWallets.push(records[i].value);
+        var records = nk.storageList(userId, "wallets", 100, null);
+        if (records && Array.isArray(records)) {
+            for (var i = 0; i < records.length; i++) {
+                var rec = records[i];
+                if (rec && rec.key && rec.key.indexOf("wallet_" + userId + "_") === 0 && rec.value) {
+                    gameWallets.push(rec.value);
+                }
             }
         }
     } catch (err) {
-        logWarn(logger, "Failed to list game wallets: " + err.message);
+        logWarn(logger, "Failed to list game wallets: " + (err && err.message ? err.message : err));
     }
 
     return JSON.stringify({
@@ -11423,7 +11426,7 @@ function rpcGetTimePeriodLeaderboard(ctx, logger, nk, payload) {
         // Parse payload
         var data;
         try {
-            data = JSON.parse(payload);
+            data = (typeof payload === 'string') ? JSON.parse(payload) : (payload || {});
         } catch (err) {
             return JSON.stringify({
                 success: false,
@@ -11431,8 +11434,11 @@ function rpcGetTimePeriodLeaderboard(ctx, logger, nk, payload) {
             });
         }
 
+        var scope = (data.scope || "game").toLowerCase();
+        var gameId = data.gameId || data.game_id || "";
+
         // Validate required fields
-        if (!data.gameId && data.scope !== "global") {
+        if (!gameId && scope !== "global") {
             return JSON.stringify({
                 success: false,
                 error: "Missing required field: gameId (or set scope to 'global')"
@@ -11457,15 +11463,17 @@ function rpcGetTimePeriodLeaderboard(ctx, logger, nk, payload) {
 
         // Build leaderboard ID
         var leaderboardId;
-        if (data.scope === "global") {
+        if (scope === "global") {
             leaderboardId = "leaderboard_global_" + period;
         } else {
-            leaderboardId = "leaderboard_" + data.gameId + "_" + period;
+            leaderboardId = "leaderboard_" + gameId + "_" + period;
         }
 
         var limit = parseInt(data.limit, 10) || 10;
+        if (limit < 1) limit = 1;
+        if (limit > 100) limit = 100;
         var cursor = data.cursor || "";
-        var ownerIds = data.ownerIds || null;
+        var ownerIds = data.ownerIds || data.owner_ids || null;
 
         // Get leaderboard records
         try {
@@ -11479,8 +11487,8 @@ function rpcGetTimePeriodLeaderboard(ctx, logger, nk, payload) {
                 success: true,
                 leaderboardId: leaderboardId,
                 period: period,
-                gameId: data.gameId,
-                scope: data.scope || "game",
+                gameId: gameId,
+                scope: scope,
                 records: enrichedRecords,
                 ownerRecords: enrichedOwnerRecords,
                 prevCursor: result.prevCursor || "",
@@ -27778,6 +27786,35 @@ function InitModule(ctx, logger, nk, initializer) {
     initializer.registerRpc('create_all_leaderboards_persistent', createAllLeaderboardsPersistent);
     logger.info('[Leaderboards] Registered RPC: create_all_leaderboards_persistent');
 
+    // Safety wrapper for production: prevents uncaught exceptions from bubbling as code=13
+    var wrapRpcNeverThrow = function(rpcFunction, rpcName) {
+        if (typeof rpcFunction !== 'function') {
+            return rpcFunction;
+        }
+
+        return function safeRpc(ctx, rpcLogger, nk, payload) {
+            try {
+                return rpcFunction(ctx, rpcLogger, nk, payload);
+            } catch (err) {
+                var traceId = (ctx && ctx.traceId) ? ctx.traceId : 'no-trace';
+                var effectiveLogger = rpcLogger || logger;
+                try {
+                    effectiveLogger.error('[SafeRPC][' + rpcName + '][' + traceId + '] Unhandled exception: ' + (err && err.message ? err.message : err));
+                } catch (logErr) {
+                    // ignore logging failure
+                }
+
+                return JSON.stringify({
+                    success: false,
+                    error: 'Internal server error',
+                    errorCode: 'INTERNAL_ERROR',
+                    rpc: rpcName,
+                    traceId: traceId
+                });
+            }
+        };
+    };
+
     // Register Time-Period Leaderboard RPCs
     // PR #4: Caching | PR #5: Validation
     try {
@@ -27794,7 +27831,7 @@ function InitModule(ctx, logger, nk, initializer) {
             });
             logger.info('[Leaderboards] ✓ Validated (PR #5): submit_score_to_time_periods');
         }
-        initializer.registerRpc('submit_score_to_time_periods', wrappedSubmitScoreToTimePeriods);
+        initializer.registerRpc('submit_score_to_time_periods', wrapRpcNeverThrow(wrappedSubmitScoreToTimePeriods, 'submit_score_to_time_periods'));
         logger.info('[Leaderboards] Registered RPC: submit_score_to_time_periods');
         
         // PR #4 + PR #5: Cache leaderboard data (MEDIUM TTL - 2 minutes), validated
@@ -27812,7 +27849,7 @@ function InitModule(ctx, logger, nk, initializer) {
             wrappedGetTimePeriodLeaderboard = globalThis.Caching.withCache(wrappedGetTimePeriodLeaderboard, 'get_time_period_leaderboard', globalThis.Caching.TTL.MEDIUM, { keyType: 'game' });
             logger.info('[Leaderboards] ✓ Cached (MEDIUM/2m): get_time_period_leaderboard');
         }
-        initializer.registerRpc('get_time_period_leaderboard', wrappedGetTimePeriodLeaderboard);
+        initializer.registerRpc('get_time_period_leaderboard', wrapRpcNeverThrow(wrappedGetTimePeriodLeaderboard, 'get_time_period_leaderboard'));
         logger.info('[Leaderboards] Registered RPC: get_time_period_leaderboard');
         
         logger.info('[Leaderboards] Successfully registered 3 Time-Period Leaderboard RPCs (with PR #4 caching + PR #5 validation)');
@@ -28050,7 +28087,7 @@ function InitModule(ctx, logger, nk, initializer) {
             wrappedWalletGetAll = globalThis.Caching.withCache(wrappedWalletGetAll, 'wallet_get_all', globalThis.Caching.TTL.SHORT, { keyType: 'user' });
             logger.info('[Wallet] ✓ Cached (SHORT/30s): wallet_get_all');
         }
-        initializer.registerRpc('wallet_get_all', wrappedWalletGetAll);
+        initializer.registerRpc('wallet_get_all', wrapRpcNeverThrow(wrappedWalletGetAll, 'wallet_get_all'));
         logger.info('[Wallet] Registered RPC: wallet_get_all');
         
         // PR #1 + PR #2 + PR #3 + PR #4 + PR #5: wallet_update_global (WRITE, sensitive, idempotent, admin-only, validated)
@@ -28086,7 +28123,7 @@ function InitModule(ctx, logger, nk, initializer) {
             wrappedWalletUpdateGlobal = globalThis.Caching.withCacheInvalidation(wrappedWalletUpdateGlobal, 'wallet_update_global', ['wallet_get_all:{userId}*', 'wallet_get_balances:{userId}*']);
             logger.info('[Wallet] ✓ Cache invalidation: wallet_update_global');
         }
-        initializer.registerRpc('wallet_update_global', wrappedWalletUpdateGlobal);
+        initializer.registerRpc('wallet_update_global', wrapRpcNeverThrow(wrappedWalletUpdateGlobal, 'wallet_update_global'));
         logger.info('[Wallet] Registered RPC: wallet_update_global');
         
         // PR #2 + PR #3 + PR #4: wallet_update_game_wallet (SENSITIVE, idempotent, invalidates cache)
@@ -28105,7 +28142,7 @@ function InitModule(ctx, logger, nk, initializer) {
             wrappedWalletUpdateGameWallet = globalThis.Caching.withCacheInvalidation(wrappedWalletUpdateGameWallet, 'wallet_update_game_wallet', ['wallet_get_all:{userId}*', 'wallet_get_balances:{userId}*']);
             logger.info('[Wallet] ✓ Cache invalidation: wallet_update_game_wallet');
         }
-        initializer.registerRpc('wallet_update_game_wallet', wrappedWalletUpdateGameWallet);
+        initializer.registerRpc('wallet_update_game_wallet', wrapRpcNeverThrow(wrappedWalletUpdateGameWallet, 'wallet_update_game_wallet'));
         logger.info('[Wallet] Registered RPC: wallet_update_game_wallet');
         
         // PR #2 + PR #4: wallet_transfer_between_game_wallets (SENSITIVE - currency transfer, invalidates cache)
