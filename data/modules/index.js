@@ -27824,30 +27824,42 @@ function InitModule(ctx, logger, nk, initializer) {
         
         // PR #5: Validate submit_score_to_time_periods
         var wrappedSubmitScoreToTimePeriods = rpcSubmitScoreToTimePeriods;
-        if (typeof globalThis !== 'undefined' && globalThis.Validation) {
-            wrappedSubmitScoreToTimePeriods = globalThis.Validation.withValidation(wrappedSubmitScoreToTimePeriods, 'submit_score_to_time_periods', {
-                game_id: globalThis.Validation.Schemas.gameId,
-                score: globalThis.Validation.Schemas.score
-            });
-            logger.info('[Leaderboards] ✓ Validated (PR #5): submit_score_to_time_periods');
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.Validation && globalThis.Validation.Schemas) {
+                wrappedSubmitScoreToTimePeriods = globalThis.Validation.withValidation(wrappedSubmitScoreToTimePeriods, 'submit_score_to_time_periods', {
+                    game_id: globalThis.Validation.Schemas.gameId,
+                    score: globalThis.Validation.Schemas.score
+                });
+                logger.info('[Leaderboards] ✓ Validated (PR #5): submit_score_to_time_periods');
+            }
+        } catch (valErr) {
+            logger.warn('[Leaderboards] Validation wrapper failed for submit_score_to_time_periods: ' + (valErr && valErr.message ? valErr.message : valErr));
         }
         initializer.registerRpc('submit_score_to_time_periods', wrapRpcNeverThrow(wrappedSubmitScoreToTimePeriods, 'submit_score_to_time_periods'));
         logger.info('[Leaderboards] Registered RPC: submit_score_to_time_periods');
         
         // PR #4 + PR #5: Cache leaderboard data (MEDIUM TTL - 2 minutes), validated
         var wrappedGetTimePeriodLeaderboard = rpcGetTimePeriodLeaderboard;
-        if (typeof globalThis !== 'undefined' && globalThis.Validation) {
-            wrappedGetTimePeriodLeaderboard = globalThis.Validation.withValidation(wrappedGetTimePeriodLeaderboard, 'get_time_period_leaderboard', {
-                game_id: globalThis.Validation.Schemas.gameId,
-                period: globalThis.Validation.Schemas.period,
-                limit: globalThis.Validation.Schemas.limit,
-                offset: globalThis.Validation.Schemas.offset
-            });
-            logger.info('[Leaderboards] ✓ Validated (PR #5): get_time_period_leaderboard');
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.Validation && globalThis.Validation.Schemas) {
+                wrappedGetTimePeriodLeaderboard = globalThis.Validation.withValidation(wrappedGetTimePeriodLeaderboard, 'get_time_period_leaderboard', {
+                    game_id: globalThis.Validation.Schemas.gameId,
+                    period: globalThis.Validation.Schemas.period,
+                    limit: globalThis.Validation.Schemas.limit,
+                    offset: globalThis.Validation.Schemas.offset
+                });
+                logger.info('[Leaderboards] ✓ Validated (PR #5): get_time_period_leaderboard');
+            }
+        } catch (validationErr) {
+            logger.warn('[Leaderboards] Validation wrapper failed for get_time_period_leaderboard: ' + (validationErr && validationErr.message ? validationErr.message : validationErr));
         }
-        if (typeof globalThis !== 'undefined' && globalThis.Caching) {
-            wrappedGetTimePeriodLeaderboard = globalThis.Caching.withCache(wrappedGetTimePeriodLeaderboard, 'get_time_period_leaderboard', globalThis.Caching.TTL.MEDIUM, { keyType: 'game' });
-            logger.info('[Leaderboards] ✓ Cached (MEDIUM/2m): get_time_period_leaderboard');
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.Caching && globalThis.Caching.TTL) {
+                wrappedGetTimePeriodLeaderboard = globalThis.Caching.withCache(wrappedGetTimePeriodLeaderboard, 'get_time_period_leaderboard', globalThis.Caching.TTL.MEDIUM, { keyType: 'game' });
+                logger.info('[Leaderboards] ✓ Cached (MEDIUM/2m): get_time_period_leaderboard');
+            }
+        } catch (cachingErr) {
+            logger.warn('[Leaderboards] Caching wrapper failed for get_time_period_leaderboard: ' + (cachingErr && cachingErr.message ? cachingErr.message : cachingErr));
         }
         initializer.registerRpc('get_time_period_leaderboard', wrapRpcNeverThrow(wrappedGetTimePeriodLeaderboard, 'get_time_period_leaderboard'));
         logger.info('[Leaderboards] Registered RPC: get_time_period_leaderboard');
@@ -28064,84 +28076,108 @@ function InitModule(ctx, logger, nk, initializer) {
         // PR #1 + PR #2 + PR #4 + PR #5: wallet_get_all (READ, sensitive - financial data, cached, validated)
         var wrappedWalletGetAll = rpcWalletGetAll;
         // PR #5: Validate input (game_id is optional for this RPC)
-        if (typeof globalThis !== 'undefined' && globalThis.Validation) {
-            wrappedWalletGetAll = globalThis.Validation.withValidation(wrappedWalletGetAll, 'wallet_get_all', {
-                game_id: { type: 'string', required: false, maxLength: 64 }
-            });
-            logger.info('[Wallet] ✓ Validated (PR #5): wallet_get_all');
-        }
-        if (typeof globalThis !== 'undefined' && globalThis.RpcMiddleware) {
-            wrappedWalletGetAll = globalThis.RpcMiddleware.withMiddleware(
-                wrappedWalletGetAll,
-                'wallet_get_all',
-                { domain: 'wallet', type: 'READ', sensitive: true }
-            );
-            logger.info('[Wallet] ✓ Wrapped with middleware: wallet_get_all');
-        }
-        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
-            wrappedWalletGetAll = globalThis.RateLimiting.withPresetRateLimit(wrappedWalletGetAll, 'wallet_get_all', 'READ');
-            logger.info('[Wallet] ✓ Rate limited (READ): wallet_get_all');
-        }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.Validation) {
+                wrappedWalletGetAll = globalThis.Validation.withValidation(wrappedWalletGetAll, 'wallet_get_all', {
+                    game_id: { type: 'string', required: false, maxLength: 64 }
+                });
+                logger.info('[Wallet] ✓ Validated (PR #5): wallet_get_all');
+            }
+        } catch (vErr) { logger.warn('[Wallet] Validation wrapper failed: ' + (vErr && vErr.message ? vErr.message : vErr)); }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.RpcMiddleware) {
+                wrappedWalletGetAll = globalThis.RpcMiddleware.withMiddleware(
+                    wrappedWalletGetAll,
+                    'wallet_get_all',
+                    { domain: 'wallet', type: 'READ', sensitive: true }
+                );
+                logger.info('[Wallet] ✓ Wrapped with middleware: wallet_get_all');
+            }
+        } catch (mErr) { logger.warn('[Wallet] Middleware wrapper failed: ' + (mErr && mErr.message ? mErr.message : mErr)); }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+                wrappedWalletGetAll = globalThis.RateLimiting.withPresetRateLimit(wrappedWalletGetAll, 'wallet_get_all', 'READ');
+                logger.info('[Wallet] ✓ Rate limited (READ): wallet_get_all');
+            }
+        } catch (rErr) { logger.warn('[Wallet] RateLimiting wrapper failed: ' + (rErr && rErr.message ? rErr.message : rErr)); }
         // PR #4: Cache wallet data (SHORT TTL - 30s as wallet changes frequently)
-        if (typeof globalThis !== 'undefined' && globalThis.Caching) {
-            wrappedWalletGetAll = globalThis.Caching.withCache(wrappedWalletGetAll, 'wallet_get_all', globalThis.Caching.TTL.SHORT, { keyType: 'user' });
-            logger.info('[Wallet] ✓ Cached (SHORT/30s): wallet_get_all');
-        }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.Caching && globalThis.Caching.TTL) {
+                wrappedWalletGetAll = globalThis.Caching.withCache(wrappedWalletGetAll, 'wallet_get_all', globalThis.Caching.TTL.SHORT, { keyType: 'user' });
+                logger.info('[Wallet] ✓ Cached (SHORT/30s): wallet_get_all');
+            }
+        } catch (cErr) { logger.warn('[Wallet] Caching wrapper failed: ' + (cErr && cErr.message ? cErr.message : cErr)); }
         initializer.registerRpc('wallet_get_all', wrapRpcNeverThrow(wrappedWalletGetAll, 'wallet_get_all'));
         logger.info('[Wallet] Registered RPC: wallet_get_all');
         
         // PR #1 + PR #2 + PR #3 + PR #4 + PR #5: wallet_update_global (WRITE, sensitive, idempotent, admin-only, validated)
         var wrappedWalletUpdateGlobal = rpcWalletUpdateGlobal;
         // PR #5: Validate input (currency and amount required)
-        if (typeof globalThis !== 'undefined' && globalThis.Validation) {
-            wrappedWalletUpdateGlobal = globalThis.Validation.withValidation(wrappedWalletUpdateGlobal, 'wallet_update_global', {
-                currency: globalThis.Validation.Schemas.currencyCode,
-                amount: globalThis.Validation.Schemas.amount,
-                reason: globalThis.Validation.Schemas.optionalString
-            });
-            logger.info('[Wallet] ✓ Validated (PR #5): wallet_update_global');
-        }
-        if (typeof globalThis !== 'undefined' && globalThis.RpcMiddleware) {
-            wrappedWalletUpdateGlobal = globalThis.RpcMiddleware.withMiddleware(
-                wrappedWalletUpdateGlobal,
-                'wallet_update_global',
-                { domain: 'wallet', type: 'WRITE', sensitive: true, adminOnly: true }
-            );
-            logger.info('[Wallet] ✓ Wrapped with middleware: wallet_update_global');
-        }
-        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
-            wrappedWalletUpdateGlobal = globalThis.RateLimiting.withPresetRateLimit(wrappedWalletUpdateGlobal, 'wallet_update_global', 'SENSITIVE');
-            logger.info('[Wallet] ✓ Rate limited (SENSITIVE): wallet_update_global');
-        }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.Validation && globalThis.Validation.Schemas) {
+                wrappedWalletUpdateGlobal = globalThis.Validation.withValidation(wrappedWalletUpdateGlobal, 'wallet_update_global', {
+                    currency: globalThis.Validation.Schemas.currencyCode,
+                    amount: globalThis.Validation.Schemas.amount,
+                    reason: globalThis.Validation.Schemas.optionalString
+                });
+                logger.info('[Wallet] ✓ Validated (PR #5): wallet_update_global');
+            }
+        } catch (vErr) { logger.warn('[Wallet] Validation failed for wallet_update_global: ' + (vErr && vErr.message ? vErr.message : vErr)); }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.RpcMiddleware) {
+                wrappedWalletUpdateGlobal = globalThis.RpcMiddleware.withMiddleware(
+                    wrappedWalletUpdateGlobal,
+                    'wallet_update_global',
+                    { domain: 'wallet', type: 'WRITE', sensitive: true, adminOnly: true }
+                );
+                logger.info('[Wallet] ✓ Wrapped with middleware: wallet_update_global');
+            }
+        } catch (mErr) { logger.warn('[Wallet] Middleware failed for wallet_update_global: ' + (mErr && mErr.message ? mErr.message : mErr)); }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+                wrappedWalletUpdateGlobal = globalThis.RateLimiting.withPresetRateLimit(wrappedWalletUpdateGlobal, 'wallet_update_global', 'SENSITIVE');
+                logger.info('[Wallet] ✓ Rate limited (SENSITIVE): wallet_update_global');
+            }
+        } catch (rErr) { logger.warn('[Wallet] RateLimiting failed for wallet_update_global: ' + (rErr && rErr.message ? rErr.message : rErr)); }
         // PR #3: Idempotency - prevent duplicate currency grants
-        if (typeof globalThis !== 'undefined' && globalThis.Idempotency) {
-            wrappedWalletUpdateGlobal = globalThis.Idempotency.withIdempotency(wrappedWalletUpdateGlobal, 'wallet_update_global', { ttlSeconds: 86400 });
-            logger.info('[Wallet] ✓ Idempotent (24h): wallet_update_global');
-        }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.Idempotency) {
+                wrappedWalletUpdateGlobal = globalThis.Idempotency.withIdempotency(wrappedWalletUpdateGlobal, 'wallet_update_global', { ttlSeconds: 86400 });
+                logger.info('[Wallet] ✓ Idempotent (24h): wallet_update_global');
+            }
+        } catch (iErr) { logger.warn('[Wallet] Idempotency failed for wallet_update_global: ' + (iErr && iErr.message ? iErr.message : iErr)); }
         // PR #4: Invalidate wallet cache on update
-        if (typeof globalThis !== 'undefined' && globalThis.Caching) {
-            wrappedWalletUpdateGlobal = globalThis.Caching.withCacheInvalidation(wrappedWalletUpdateGlobal, 'wallet_update_global', ['wallet_get_all:{userId}*', 'wallet_get_balances:{userId}*']);
-            logger.info('[Wallet] ✓ Cache invalidation: wallet_update_global');
-        }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.Caching) {
+                wrappedWalletUpdateGlobal = globalThis.Caching.withCacheInvalidation(wrappedWalletUpdateGlobal, 'wallet_update_global', ['wallet_get_all:{userId}*', 'wallet_get_balances:{userId}*']);
+                logger.info('[Wallet] ✓ Cache invalidation: wallet_update_global');
+            }
+        } catch (cErr) { logger.warn('[Wallet] Caching failed for wallet_update_global: ' + (cErr && cErr.message ? cErr.message : cErr)); }
         initializer.registerRpc('wallet_update_global', wrapRpcNeverThrow(wrappedWalletUpdateGlobal, 'wallet_update_global'));
         logger.info('[Wallet] Registered RPC: wallet_update_global');
         
         // PR #2 + PR #3 + PR #4: wallet_update_game_wallet (SENSITIVE, idempotent, invalidates cache)
         var wrappedWalletUpdateGameWallet = rpcWalletUpdateGameWallet;
-        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
-            wrappedWalletUpdateGameWallet = globalThis.RateLimiting.withPresetRateLimit(rpcWalletUpdateGameWallet, 'wallet_update_game_wallet', 'SENSITIVE');
-            logger.info('[Wallet] ✓ Rate limited (SENSITIVE): wallet_update_game_wallet');
-        }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+                wrappedWalletUpdateGameWallet = globalThis.RateLimiting.withPresetRateLimit(rpcWalletUpdateGameWallet, 'wallet_update_game_wallet', 'SENSITIVE');
+                logger.info('[Wallet] ✓ Rate limited (SENSITIVE): wallet_update_game_wallet');
+            }
+        } catch (rErr) { logger.warn('[Wallet] RateLimiting failed for wallet_update_game_wallet: ' + (rErr && rErr.message ? rErr.message : rErr)); }
         // PR #3: Idempotency - prevent duplicate currency grants
-        if (typeof globalThis !== 'undefined' && globalThis.Idempotency) {
-            wrappedWalletUpdateGameWallet = globalThis.Idempotency.withIdempotency(wrappedWalletUpdateGameWallet, 'wallet_update_game_wallet', { ttlSeconds: 86400 });
-            logger.info('[Wallet] ✓ Idempotent (24h): wallet_update_game_wallet');
-        }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.Idempotency) {
+                wrappedWalletUpdateGameWallet = globalThis.Idempotency.withIdempotency(wrappedWalletUpdateGameWallet, 'wallet_update_game_wallet', { ttlSeconds: 86400 });
+                logger.info('[Wallet] ✓ Idempotent (24h): wallet_update_game_wallet');
+            }
+        } catch (iErr) { logger.warn('[Wallet] Idempotency failed for wallet_update_game_wallet: ' + (iErr && iErr.message ? iErr.message : iErr)); }
         // PR #4: Invalidate wallet cache
-        if (typeof globalThis !== 'undefined' && globalThis.Caching) {
-            wrappedWalletUpdateGameWallet = globalThis.Caching.withCacheInvalidation(wrappedWalletUpdateGameWallet, 'wallet_update_game_wallet', ['wallet_get_all:{userId}*', 'wallet_get_balances:{userId}*']);
-            logger.info('[Wallet] ✓ Cache invalidation: wallet_update_game_wallet');
-        }
+        try {
+            if (typeof globalThis !== 'undefined' && globalThis.Caching) {
+                wrappedWalletUpdateGameWallet = globalThis.Caching.withCacheInvalidation(wrappedWalletUpdateGameWallet, 'wallet_update_game_wallet', ['wallet_get_all:{userId}*', 'wallet_get_balances:{userId}*']);
+                logger.info('[Wallet] ✓ Cache invalidation: wallet_update_game_wallet');
+            }
+        } catch (cErr) { logger.warn('[Wallet] Caching failed for wallet_update_game_wallet: ' + (cErr && cErr.message ? cErr.message : cErr)); }
         initializer.registerRpc('wallet_update_game_wallet', wrapRpcNeverThrow(wrappedWalletUpdateGameWallet, 'wallet_update_game_wallet'));
         logger.info('[Wallet] Registered RPC: wallet_update_game_wallet');
         
