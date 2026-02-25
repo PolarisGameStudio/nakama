@@ -1,0 +1,73 @@
+name: Deploy on Push
+
+on:
+  push:
+    branches:
+      - master
+      - nakama-prod
+    paths:
+      - 'data/modules/**'
+      - 'build/**'
+      - 'Dockerfile'
+      - '.github/workflows/deploy-on-push.yaml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set env vars
+        run: |
+          echo "ARG_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          echo "ARG_VERSION=dev-$(date +'%Y%m%d%H%M%S')" >> $GITHUB_ENV
+          echo "BRANCH_NAME=${GITHUB_REF##*/}" >> $GITHUB_ENV
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/master' }}
+            type=raw,value=prod,enable=${{ github.ref == 'refs/heads/nakama-prod' }}
+            type=sha,prefix=,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          file: "build/Dockerfile"
+          build-args: |
+            COMMIT=${{ env.ARG_COMMIT }}
+            VERSION=${{ env.ARG_VERSION }}
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Deployment Summary
+        run: |
+          echo "## 🚀 Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ env.BRANCH_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ env.ARG_COMMIT }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ env.ARG_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image Tags:** ${{ steps.meta.outputs.tags }}" >> $GITHUB_STEP_SUMMARY
