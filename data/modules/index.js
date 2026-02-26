@@ -2923,6 +2923,326 @@ var GUEST_USER_USERNAME_PREFIX = "guest_test_";
 var GUEST_CLEANUP_DEFAULT_LIMIT = 10000;
 var DEVICE_USER_MAPPINGS_COLLECTION = "device_user_mappings";
 var SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000";
+var PROFILE_SCHEMA_VERSION = 2;
+var PROFILE_VERSION_FIELD = "profileVersion";
+var LEGACY_PROFILE_STORAGE_LOCATIONS = [
+    { collection: PLAYER_METADATA_COLLECTION, key: "metadata" },
+    { collection: "player_data", key: "player_metadata" },
+    { collection: "player_metadata", key: "metadata" }
+];
+var PROFILE_FORBIDDEN_UPDATE_FIELDS = {
+    user_id: true,
+    created_at: true,
+    updated_at: true,
+    schemaVersion: true,
+    profileVersion: true,
+    version: true,
+    isAdmin: true,
+    admin: true
+};
+var PROFILE_ALLOWED_UPDATE_FIELDS = {
+    role: true,
+    email: true,
+    first_name: true,
+    last_name: true,
+    login_type: true,
+    idp_username: true,
+    account_status: true,
+    avatar_url: true,
+    avatarUrl: true,
+    avatar: true,
+    wallet_address: true,
+    cognito_user_id: true,
+    geo_location: true,
+    device_id: true,
+    game_id: true,
+    is_adult: true,
+    is_guest: true,
+    country: true,
+    country_code: true,
+    region: true,
+    city: true,
+    location_timezone: true,
+    platform: true,
+    device_model: true,
+    device_name: true,
+    os_version: true,
+    app_version: true,
+    unity_version: true,
+    locale: true,
+    timezone: true,
+    screen_dpi: true,
+    graphics_device: true,
+    processor_type: true,
+    latitude: true,
+    longitude: true,
+    screen_width: true,
+    screen_height: true,
+    system_memory_mb: true,
+    processor_count: true,
+    age: true,
+    location_source: true,
+    expected_profile_version: true,
+    expectedProfileVersion: true,
+    idempotencyKey: true,
+    idempotency_key: true,
+    traceId: true,
+    trace_id: true,
+    requestId: true,
+    request_id: true
+};
+
+function getProfileTraceId(ctx, requestId) {
+    if (ctx && ctx.traceId) {
+        return ctx.traceId;
+    }
+    return requestId || generateShortUUID();
+}
+
+function normalizeProfileLocale(locale) {
+    if (!locale || typeof locale !== "string") {
+        return null;
+    }
+
+    var normalized = locale.trim().replace(/_/g, "-").toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    if (normalized.length > MAX_STRING_LENGTHS.locale) {
+        normalized = normalized.substring(0, MAX_STRING_LENGTHS.locale);
+    }
+    return normalized;
+}
+
+function normalizeProfilePlatform(platform) {
+    if (!platform || typeof platform !== "string") {
+        return null;
+    }
+
+    var normalized = platform.trim().toLowerCase();
+    if (!normalized) {
+        return null;
+    }
+
+    var aliases = {
+        android: "android",
+        ios: "ios",
+        iphoneplayer: "ios",
+        osxplayer: "macos",
+        windowsplayer: "windows",
+        webglplayer: "webgl",
+        webgl: "webgl",
+        linuxplayer: "linux",
+        editor: "editor"
+    };
+
+    return aliases[normalized] || normalized;
+}
+
+function validateProfilePayloadKeys(meta) {
+    var unknownFields = [];
+    var forbiddenFields = [];
+
+    for (var key in meta) {
+        if (!Object.prototype.hasOwnProperty.call(meta, key)) {
+            continue;
+        }
+
+        if (PROFILE_FORBIDDEN_UPDATE_FIELDS[key]) {
+            forbiddenFields.push(key);
+            continue;
+        }
+
+        if (!PROFILE_ALLOWED_UPDATE_FIELDS[key]) {
+            unknownFields.push(key);
+        }
+    }
+
+    return {
+        isValid: unknownFields.length === 0 && forbiddenFields.length === 0,
+        unknownFields: unknownFields,
+        forbiddenFields: forbiddenFields
+    };
+}
+
+function parseExpectedProfileVersion(meta) {
+    var rawValue = null;
+
+    if (meta && meta.expected_profile_version !== undefined) {
+        rawValue = meta.expected_profile_version;
+    } else if (meta && meta.expectedProfileVersion !== undefined) {
+        rawValue = meta.expectedProfileVersion;
+    }
+
+    if (rawValue === null || rawValue === undefined || rawValue === "") {
+        return null;
+    }
+
+    var parsed = parseInt(rawValue, 10);
+    if (isNaN(parsed) || parsed < 0) {
+        return -1;
+    }
+    return parsed;
+}
+
+function readProfileRecordWithFallback(nk, userId) {
+    var primaryRecord = nk.storageRead([{
+        collection: PLAYER_METADATA_COLLECTION,
+        key: PLAYER_METADATA_KEY,
+        userId: userId
+    }]);
+
+    if (primaryRecord && primaryRecord.length > 0 && primaryRecord[0].value) {
+        return {
+            found: true,
+            value: primaryRecord[0].value,
+            version: primaryRecord[0].version || null,
+            collection: PLAYER_METADATA_COLLECTION,
+            key: PLAYER_METADATA_KEY,
+            isPrimary: true
+        };
+    }
+
+    for (var i = 0; i < LEGACY_PROFILE_STORAGE_LOCATIONS.length; i++) {
+        var location = LEGACY_PROFILE_STORAGE_LOCATIONS[i];
+        var records = nk.storageRead([{
+            collection: location.collection,
+            key: location.key,
+            userId: userId
+        }]);
+
+        if (records && records.length > 0 && records[0].value) {
+            return {
+                found: true,
+                value: records[0].value,
+                version: records[0].version || null,
+                collection: location.collection,
+                key: location.key,
+                isPrimary: false
+            };
+        }
+    }
+
+    return {
+        found: false,
+        value: null,
+        version: null,
+        collection: null,
+        key: null,
+        isPrimary: false
+    };
+}
+
+function migrateProfileMetadataSchema(existingProfile, userId, ctx, nowIso) {
+    var migrated = {};
+    var wasMigrated = false;
+    var key;
+
+    if (existingProfile && typeof existingProfile === "object") {
+        for (key in existingProfile) {
+            if (Object.prototype.hasOwnProperty.call(existingProfile, key)) {
+                migrated[key] = existingProfile[key];
+            }
+        }
+    }
+
+    if (!migrated.user_id && userId) {
+        migrated.user_id = userId;
+        wasMigrated = true;
+    }
+
+    if (!migrated.created_at) {
+        migrated.created_at = nowIso;
+        wasMigrated = true;
+    }
+
+    if (!migrated.updated_at) {
+        migrated.updated_at = nowIso;
+        wasMigrated = true;
+    }
+
+    if (!migrated.schemaVersion || typeof migrated.schemaVersion !== "number") {
+        migrated.schemaVersion = 1;
+        wasMigrated = true;
+    }
+
+    if (!migrated[PROFILE_VERSION_FIELD] || typeof migrated[PROFILE_VERSION_FIELD] !== "number") {
+        migrated[PROFILE_VERSION_FIELD] = 1;
+        wasMigrated = true;
+    }
+
+    // Backward compatibility for legacy avatar field names.
+    if (!migrated.avatar_url) {
+        if (typeof migrated.avatarUrl === "string" && migrated.avatarUrl.trim().length > 0) {
+            migrated.avatar_url = migrated.avatarUrl.trim();
+            wasMigrated = true;
+        } else if (typeof migrated.avatar === "string" && migrated.avatar.trim().length > 0) {
+            migrated.avatar_url = migrated.avatar.trim();
+            wasMigrated = true;
+        }
+    }
+
+    if (migrated.schemaVersion < PROFILE_SCHEMA_VERSION) {
+        if (!migrated.country_code && migrated.geo_location && typeof migrated.geo_location === "string") {
+            migrated.country_code = migrated.geo_location.trim().toUpperCase();
+            wasMigrated = true;
+        }
+
+        if (!migrated.geo_location && migrated.country_code && typeof migrated.country_code === "string") {
+            migrated.geo_location = migrated.country_code.trim().toUpperCase();
+            wasMigrated = true;
+        }
+
+        if (!migrated.timezone && migrated.location_timezone) {
+            migrated.timezone = migrated.location_timezone;
+            wasMigrated = true;
+        }
+
+        migrated.schemaVersion = PROFILE_SCHEMA_VERSION;
+        wasMigrated = true;
+    }
+
+    if (ctx && ctx.username && !migrated.nakama_username) {
+        migrated.nakama_username = ctx.username;
+        wasMigrated = true;
+    }
+
+    return {
+        profile: migrated,
+        migrated: wasMigrated
+    };
+}
+
+function persistProfileMigrationIfNeeded(nk, logger, userId, profile, requestId) {
+    try {
+        nk.storageWrite([{
+            collection: PLAYER_METADATA_COLLECTION,
+            key: PLAYER_METADATA_KEY,
+            userId: userId,
+            value: profile,
+            permissionRead: PERMISSION_READ_OWNER,
+            permissionWrite: PERMISSION_WRITE_NONE,
+            version: "*"
+        }]);
+        logger.info("[PlayerMetadata:" + requestId + "] Migrated legacy metadata to primary storage");
+    } catch (err) {
+        logger.warn("[PlayerMetadata:" + requestId + "] Failed to persist migrated profile: " + err.message);
+    }
+}
+
+function invalidateProfileReadCaches(userId) {
+    if (!userId || typeof globalThis === "undefined" || !globalThis.Caching || !globalThis.Caching.invalidatePattern) {
+        return;
+    }
+
+    try {
+        globalThis.Caching.invalidatePattern("get_player_metadata:" + userId + "*");
+        globalThis.Caching.invalidatePattern("get_player_portfolio:" + userId + "*");
+    } catch (err) {
+        // Best effort cache invalidation.
+    }
+}
 
 
 // Maximum lengths for string fields (prevent abuse)
@@ -2934,6 +3254,7 @@ var MAX_STRING_LENGTHS = {
     login_type: 50,
     idp_username: 256,
     account_status: 50,
+    avatar_url: 512,
     wallet_address: 256,
     cognito_user_id: 128,
     geo_location: 10,
@@ -2978,15 +3299,16 @@ var LEGACY_STORAGE_LOCATIONS = [
 function rpcUpdatePlayerMetadataUnified(ctx, logger, nk, payload) {
     var startTime = Date.now();
     var requestId = generateShortUUID();
+    var traceId = getProfileTraceId(ctx, requestId);
 
-    logger.info("[PlayerMetadata:" + requestId + "] RPC called");
+    logger.info("[PlayerMetadata:" + requestId + "][" + traceId + "] RPC called");
 
     // -------------------------------------------------------------------------
     // Step 1: Authentication Check
     // -------------------------------------------------------------------------
     if (!ctx.userId) {
         logger.error("[PlayerMetadata:" + requestId + "] User not authenticated");
-        return buildErrorResponse("User not authenticated", "AUTH_REQUIRED", requestId);
+        return buildErrorResponse("User not authenticated", "AUTH_REQUIRED", requestId, traceId);
     }
 
     var userId = ctx.userId;
@@ -2999,13 +3321,47 @@ function rpcUpdatePlayerMetadataUnified(ctx, logger, nk, payload) {
         meta = JSON.parse(payload || "{}");
     } catch (err) {
         logger.error("[PlayerMetadata:" + requestId + "] Invalid JSON: " + err.message);
-        return buildErrorResponse("Invalid JSON payload", "INVALID_JSON", requestId);
+        return buildErrorResponse("Invalid JSON payload", "INVALID_JSON", requestId, traceId);
     }
 
     // Validate payload is an object
     if (meta === null || typeof meta !== "object" || Array.isArray(meta)) {
         logger.error("[PlayerMetadata:" + requestId + "] Payload must be an object");
-        return buildErrorResponse("Payload must be a JSON object", "INVALID_PAYLOAD", requestId);
+        return buildErrorResponse("Payload must be a JSON object", "INVALID_PAYLOAD", requestId, traceId);
+    }
+
+    var keyValidation = validateProfilePayloadKeys(meta);
+    if (!keyValidation.isValid) {
+        return buildErrorResponse(
+            "Payload contains unsupported profile fields",
+            "INVALID_FIELD",
+            requestId,
+            traceId,
+            {
+                unknownFields: keyValidation.unknownFields,
+                forbiddenFields: keyValidation.forbiddenFields
+            }
+        );
+    }
+
+    if (meta.user_id && meta.user_id !== userId) {
+        return buildErrorResponse(
+            "Cannot update another user's profile",
+            "FORBIDDEN",
+            requestId,
+            traceId
+        );
+    }
+
+    var expectedProfileVersion = parseExpectedProfileVersion(meta);
+    if (expectedProfileVersion === -1) {
+        return buildErrorResponse(
+            "Invalid expected profile version",
+            "INVALID_FIELD",
+            requestId,
+            traceId,
+            { field: "expected_profile_version" }
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -3013,23 +3369,29 @@ function rpcUpdatePlayerMetadataUnified(ctx, logger, nk, payload) {
     // -------------------------------------------------------------------------
     var existing = null;
     var isNewUser = false;
+    var existingStorageVersion = null;
+    var loadedFromPrimary = false;
+    var now = new Date().toISOString();
 
     try {
-        var records = nk.storageRead([{
-            collection: PLAYER_METADATA_COLLECTION,
-            key: PLAYER_METADATA_KEY,
-            userId: userId
-        }]);
+        var profileRead = readProfileRecordWithFallback(nk, userId);
+        if (profileRead.found) {
+            loadedFromPrimary = profileRead.isPrimary === true;
+            existingStorageVersion = loadedFromPrimary ? profileRead.version : null;
 
-        if (records && records.length > 0 && records[0].value) {
-            existing = records[0].value;
+            var migrationResult = migrateProfileMetadataSchema(profileRead.value, userId, ctx, now);
+            existing = migrationResult.profile;
             logger.debug("[PlayerMetadata:" + requestId + "] Found existing metadata");
+
+            if (migrationResult.migrated || !loadedFromPrimary) {
+                persistProfileMigrationIfNeeded(nk, logger, userId, existing, requestId);
+            }
 
             // Rate limiting check
             if (existing.updated_at) {
                 var lastUpdate = new Date(existing.updated_at).getTime();
-                var now = Date.now();
-                var secondsSinceUpdate = (now - lastUpdate) / 1000;
+                var nowMs = Date.now();
+                var secondsSinceUpdate = (nowMs - lastUpdate) / 1000;
 
                 if (secondsSinceUpdate < MIN_UPDATE_INTERVAL_SECONDS) {
                     logger.warn("[PlayerMetadata:" + requestId + "] Rate limited.  Last update: " +
@@ -3046,6 +3408,26 @@ function rpcUpdatePlayerMetadataUnified(ctx, logger, nk, payload) {
         isNewUser = true;
     }
 
+    if (!isNewUser && expectedProfileVersion !== null) {
+        var currentProfileVersion = parseInt(existing && existing[PROFILE_VERSION_FIELD], 10);
+        if (isNaN(currentProfileVersion)) {
+            currentProfileVersion = 1;
+        }
+
+        if (currentProfileVersion !== expectedProfileVersion) {
+            return buildErrorResponse(
+                "Profile version conflict. Refresh profile and retry.",
+                "VERSION_CONFLICT",
+                requestId,
+                traceId,
+                {
+                    expectedProfileVersion: expectedProfileVersion,
+                    currentProfileVersion: currentProfileVersion
+                }
+            );
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Step 4: Sanitize and Validate Input Fields
     // -------------------------------------------------------------------------
@@ -3053,14 +3435,25 @@ function rpcUpdatePlayerMetadataUnified(ctx, logger, nk, payload) {
     var validationResult = validateMetadataPayload(sanitized, logger, requestId);
 
     if (validationResult.errors.length > 0) {
-        logger.warn("[PlayerMetadata:" + requestId + "] Validation warnings: " +
+        logger.warn("[PlayerMetadata:" + requestId + "] Validation errors: " +
             validationResult.errors.join("; "));
+        return buildErrorResponse(
+            "Profile payload validation failed",
+            "VALIDATION_ERROR",
+            requestId,
+            traceId,
+            { validationErrors: validationResult.errors }
+        );
+    }
+
+    if (validationResult.warnings.length > 0) {
+        logger.warn("[PlayerMetadata:" + requestId + "] Validation warnings: " +
+            validationResult.warnings.join("; "));
     }
 
     // -------------------------------------------------------------------------
     // Step 5: Build Merged Metadata Object
     // -------------------------------------------------------------------------
-    var now = new Date().toISOString();
     var merged = buildMergedMetadata(existing, sanitized, now, isNewUser, userId, ctx);
 
     // -------------------------------------------------------------------------
@@ -3161,26 +3554,43 @@ function rpcUpdatePlayerMetadataUnified(ctx, logger, nk, payload) {
     // Step 10: Write to Storage
     // -------------------------------------------------------------------------
     try {
-        nk.storageWrite([{
+        var writeRequest = {
             collection: PLAYER_METADATA_COLLECTION,
             key: PLAYER_METADATA_KEY,
             userId: userId,
             value: merged,
             permissionRead: PERMISSION_READ_OWNER,
-            permissionWrite: PERMISSION_WRITE_NONE,
-            version: "*"
-        }]);
+            permissionWrite: PERMISSION_WRITE_NONE
+        };
+
+        if (existingStorageVersion) {
+            writeRequest.version = existingStorageVersion;
+        } else {
+            writeRequest.version = "*";
+        }
+
+        nk.storageWrite([writeRequest]);
 
         logger.info("[PlayerMetadata:" + requestId + "] Metadata saved successfully");
     } catch (err) {
         logger.error("[PlayerMetadata:" + requestId + "] Write failed: " + err.message);
-        return buildErrorResponse("Failed to save metadata", "STORAGE_ERROR", requestId);
+        if (err.message && err.message.indexOf("version") !== -1) {
+            return buildErrorResponse(
+                "Profile update conflict. Refresh profile and retry.",
+                "VERSION_CONFLICT",
+                requestId,
+                traceId
+            );
+        }
+
+        return buildErrorResponse("Failed to save metadata", "STORAGE_ERROR", requestId, traceId);
     }
 
     // -------------------------------------------------------------------------
     // Step 11: Cleanup Legacy Data (async, non-blocking)
     // -------------------------------------------------------------------------
     cleanupLegacyMetadataAsync(nk, logger, userId, requestId);
+    invalidateProfileReadCaches(userId);
 
     // -------------------------------------------------------------------------
     // Step 12: Build Success Response
@@ -3191,12 +3601,22 @@ function rpcUpdatePlayerMetadataUnified(ctx, logger, nk, payload) {
         " | Games: " + (merged.total_games || 0) +
         " | New: " + isNewUser);
 
-    return JSON.stringify({
-        success: true,
+    var data = {
+        metadata: merged,
+        isNewUser: isNewUser,
+        executionTimeMs: executionTime,
+        storage: {
+            collection: PLAYER_METADATA_COLLECTION,
+            key: PLAYER_METADATA_KEY,
+            permissionRead: "OWNER_READ",
+            permissionWrite: "NO_WRITE"
+        }
+    };
+
+    return buildSuccessResponse(data, requestId, traceId, {
         metadata: merged,
         is_new_user: isNewUser,
         execution_time_ms: executionTime,
-        request_id: requestId,
         storage: {
             collection: PLAYER_METADATA_COLLECTION,
             key: PLAYER_METADATA_KEY,
@@ -3222,17 +3642,48 @@ function generateShortUUID() {
     return result;
 }
 
+function buildProfileEnvelope(success, data, errorCode, errorMessage, requestId, traceId, legacyFields, details) {
+    var safeRequestId = requestId || generateShortUUID();
+    var safeTraceId = traceId || "no-trace";
+    var envelope = {
+        success: success === true,
+        errorCode: errorCode || null,
+        error_code: errorCode || null,
+        traceId: safeTraceId,
+        requestId: safeRequestId,
+        request_id: safeRequestId,
+        data: success === true ? (data || {}) : null
+    };
+
+    if (!success) {
+        envelope.error = errorMessage || "Unknown error";
+        envelope.timestamp = new Date().toISOString();
+    }
+
+    if (details !== undefined && details !== null) {
+        envelope.details = details;
+    }
+
+    if (legacyFields && typeof legacyFields === "object") {
+        for (var key in legacyFields) {
+            if (Object.prototype.hasOwnProperty.call(legacyFields, key) && envelope[key] === undefined) {
+                envelope[key] = legacyFields[key];
+            }
+        }
+    }
+
+    return JSON.stringify(envelope);
+}
+
 /**
  * Build standardized error response
  */
-function buildErrorResponse(message, errorCode, requestId) {
-    return JSON.stringify({
-        success: false,
-        error: message,
-        error_code: errorCode,
-        request_id: requestId,
-        timestamp: new Date().toISOString()
-    });
+function buildErrorResponse(message, errorCode, requestId, traceId, details) {
+    return buildProfileEnvelope(false, null, errorCode, message, requestId, traceId, null, details);
+}
+
+function buildSuccessResponse(data, requestId, traceId, legacyFields) {
+    return buildProfileEnvelope(true, data, null, null, requestId, traceId, legacyFields, null);
 }
 
 /**
@@ -3308,7 +3759,7 @@ function sanitizeMetadataPayload(meta, logger, requestId) {
     // Identity string fields
     var identityFields = [
         'role', 'email', 'first_name', 'last_name', 'login_type',
-        'idp_username', 'account_status', 'wallet_address', 'cognito_user_id',
+        'idp_username', 'account_status', 'avatar_url', 'wallet_address', 'cognito_user_id',
         'geo_location', 'device_id'
     ];
 
@@ -3317,6 +3768,20 @@ function sanitizeMetadataPayload(meta, logger, requestId) {
         if (meta.hasOwnProperty(field) && meta[field] !== null && meta[field] !== undefined) {
             var maxLen = MAX_STRING_LENGTHS[field] || 256;
             sanitized[field] = sanitizeString(meta[field], maxLen);
+        }
+    }
+
+    // Backward compatibility: accept legacy avatar keys from older clients.
+    if (!sanitized.avatar_url) {
+        var legacyAvatarValue = null;
+        if (meta.hasOwnProperty("avatarUrl")) {
+            legacyAvatarValue = meta.avatarUrl;
+        } else if (meta.hasOwnProperty("avatar")) {
+            legacyAvatarValue = meta.avatar;
+        }
+
+        if (legacyAvatarValue !== null && legacyAvatarValue !== undefined) {
+            sanitized.avatar_url = sanitizeString(legacyAvatarValue, MAX_STRING_LENGTHS.avatar_url || 512);
         }
     }
 
@@ -3344,6 +3809,9 @@ function sanitizeMetadataPayload(meta, logger, requestId) {
         }
     }
 
+    if (meta.location_source !== undefined && meta.location_source !== null) {
+        sanitized.location_source = sanitizeString(meta.location_source, 32);
+    }
 
     // Special handling for game_id (UUID validation)
     if (meta.game_id) {
@@ -3359,6 +3827,10 @@ function sanitizeMetadataPayload(meta, logger, requestId) {
     if (meta.is_adult !== undefined) {
         var isAdultStr = String(meta.is_adult).toLowerCase();
         sanitized.is_adult = (isAdultStr === 'true' || isAdultStr === '1' || isAdultStr === 'yes') ? "True" : "False";
+    }
+    if (meta.is_guest !== undefined) {
+        var isGuestStr = String(meta.is_guest).toLowerCase();
+        sanitized.is_guest = (isGuestStr === 'true' || isGuestStr === '1' || isGuestStr === 'yes') ? true : false;
     }
 
     // Numeric fields - latitude/longitude
@@ -3413,6 +3885,35 @@ function sanitizeMetadataPayload(meta, logger, requestId) {
         }
     }
 
+    // Canonicalization for profile-sensitive enum-ish fields
+    if (sanitized.role) {
+        sanitized.role = sanitized.role.toLowerCase();
+    }
+    if (sanitized.account_status) {
+        sanitized.account_status = sanitized.account_status.toLowerCase();
+    }
+    if (sanitized.login_type) {
+        sanitized.login_type = sanitized.login_type.toLowerCase();
+    }
+    if (sanitized.country_code) {
+        sanitized.country_code = sanitizeString(sanitized.country_code, 5).toUpperCase();
+    }
+    if (sanitized.geo_location) {
+        sanitized.geo_location = sanitizeString(sanitized.geo_location, 5).toUpperCase();
+    }
+    if (!sanitized.geo_location && sanitized.country_code) {
+        sanitized.geo_location = sanitized.country_code;
+    }
+    if (sanitized.platform) {
+        sanitized.platform = normalizeProfilePlatform(sanitized.platform);
+    }
+    if (sanitized.locale) {
+        sanitized.locale = normalizeProfileLocale(sanitized.locale);
+    }
+    if (sanitized.location_source) {
+        sanitized.location_source = sanitized.location_source.toLowerCase();
+    }
+
     return sanitized;
 }
 
@@ -3457,7 +3958,7 @@ function validateMetadataPayload(sanitized, logger, requestId) {
     var hasLat = sanitized.latitude !== undefined;
     var hasLon = sanitized.longitude !== undefined;
     if (hasLat !== hasLon) {
-        warnings.push("Latitude and longitude should be provided together");
+        errors.push("Latitude and longitude should be provided together");
     }
 
     // Validate screen dimensions consistency
@@ -3465,6 +3966,20 @@ function validateMetadataPayload(sanitized, logger, requestId) {
     var hasHeight = sanitized.screen_height !== undefined;
     if (hasWidth !== hasHeight) {
         warnings.push("Screen width and height should be provided together");
+    }
+
+    // Canonical field validation
+    if (sanitized.country_code && !/^[A-Z]{2,5}$/.test(sanitized.country_code)) {
+        errors.push("country_code must be 2-5 uppercase letters");
+    }
+    if (sanitized.geo_location && !/^[A-Z]{2,5}$/.test(sanitized.geo_location)) {
+        errors.push("geo_location must be 2-5 uppercase letters");
+    }
+    if (sanitized.locale && !/^[a-z]{2,3}(-[a-z0-9]{2,8}){0,2}$/.test(sanitized.locale)) {
+        warnings.push("Locale format is non-standard: " + sanitized.locale);
+    }
+    if (sanitized.avatar_url && !/^https?:\/\/[^\s]+$/i.test(sanitized.avatar_url)) {
+        warnings.push("avatar_url should be absolute HTTP/HTTPS URL");
     }
 
     return {
@@ -3503,6 +4018,18 @@ function buildMergedMetadata(existing, sanitized, now, isNewUser, userId, ctx) {
     // System fields (always update)
     merged.user_id = userId;
     merged.updated_at = now;
+    merged.schemaVersion = PROFILE_SCHEMA_VERSION;
+    var previousProfileVersion = 0;
+    if (existing && typeof existing[PROFILE_VERSION_FIELD] === "number") {
+        previousProfileVersion = existing[PROFILE_VERSION_FIELD];
+    } else if (existing && existing[PROFILE_VERSION_FIELD] !== undefined) {
+        var parsedProfileVersion = parseInt(existing[PROFILE_VERSION_FIELD], 10);
+        if (!isNaN(parsedProfileVersion)) {
+            previousProfileVersion = parsedProfileVersion;
+        }
+    }
+    merged[PROFILE_VERSION_FIELD] = previousProfileVersion + 1;
+    merged.version = merged[PROFILE_VERSION_FIELD];
 
     // First-time fields
     if (isNewUser) {
@@ -4186,28 +4713,35 @@ function cleanupLegacyMetadataAsync(nk, logger, userId, requestId) {
  */
 function rpcGetPlayerMetadata(ctx, logger, nk, payload) {
     var requestId = generateShortUUID();
+    var traceId = getProfileTraceId(ctx, requestId);
 
     if (!ctx.userId) {
-        return JSON.stringify({
-            success: false,
-            error: "User not authenticated",
-            error_code: "AUTH_REQUIRED"
-        });
+        return buildErrorResponse("User not authenticated", "AUTH_REQUIRED", requestId, traceId);
     }
 
     try {
-        var records = nk.storageRead([{
-            collection: PLAYER_METADATA_COLLECTION,
-            key: PLAYER_METADATA_KEY,
-            userId: ctx.userId
-        }]);
+        var readResult = readProfileRecordWithFallback(nk, ctx.userId);
+        if (readResult.found) {
+            var nowIso = new Date().toISOString();
+            var migrationResult = migrateProfileMetadataSchema(readResult.value, ctx.userId, ctx, nowIso);
+            var metadata = migrationResult.profile;
 
-        if (records && records.length > 0 && records[0].value) {
+            if (migrationResult.migrated || !readResult.isPrimary) {
+                persistProfileMigrationIfNeeded(nk, logger, ctx.userId, metadata, requestId);
+            }
+
             logger.info("[GetPlayerMetadata:" + requestId + "] Retrieved for user: " + ctx.userId);
 
-            return JSON.stringify({
-                success: true,
-                metadata: records[0].value,
+            var data = {
+                metadata: metadata,
+                storage: {
+                    collection: PLAYER_METADATA_COLLECTION,
+                    key: PLAYER_METADATA_KEY
+                }
+            };
+
+            return buildSuccessResponse(data, requestId, traceId, {
+                metadata: metadata,
                 storage: {
                     collection: PLAYER_METADATA_COLLECTION,
                     key: PLAYER_METADATA_KEY
@@ -4216,19 +4750,10 @@ function rpcGetPlayerMetadata(ctx, logger, nk, payload) {
         }
 
         logger.warn("[GetPlayerMetadata:" + requestId + "] No metadata found for user: " + ctx.userId);
-
-        return JSON.stringify({
-            success: false,
-            error: "No metadata found for user",
-            error_code: "NOT_FOUND"
-        });
+        return buildErrorResponse("No metadata found for user", "NOT_FOUND", requestId, traceId);
     } catch (err) {
         logger.error("[GetPlayerMetadata:" + requestId + "] Error: " + err.message);
-        return JSON.stringify({
-            success: false,
-            error: "Failed to read metadata",
-            error_code: "STORAGE_ERROR"
-        });
+        return buildErrorResponse("Failed to read metadata", "STORAGE_ERROR", requestId, traceId);
     }
 }
 
@@ -4242,39 +4767,70 @@ function rpcGetPlayerMetadata(ctx, logger, nk, payload) {
  */
 function rpcAdminDeletePlayerMetadata(ctx, logger, nk, payload) {
     var requestId = generateShortUUID();
+    var traceId = getProfileTraceId(ctx, requestId);
 
     if (!ctx.userId) {
-        return JSON.stringify({
-            success: false,
-            error: "User not authenticated",
-            error_code: "AUTH_REQUIRED"
-        });
+        return buildErrorResponse("User not authenticated", "AUTH_REQUIRED", requestId, traceId);
+    }
+
+    var adminCheck = checkAdminPermission(nk, logger, ctx.userId);
+    if (!adminCheck.isAdmin) {
+        return buildErrorResponse(
+            adminCheck.error || "Admin permission required",
+            "FORBIDDEN",
+            requestId,
+            traceId
+        );
     }
 
     try {
+        var parsedPayload = {};
+        try {
+            parsedPayload = JSON.parse(payload || "{}");
+        } catch (parseErr) {
+            return buildErrorResponse("Invalid JSON payload", "INVALID_JSON", requestId, traceId);
+        }
+
+        var targetUserId = parsedPayload.target_user_id || parsedPayload.user_id || ctx.userId;
+        if (!isValidUUIDFormat(targetUserId)) {
+            return buildErrorResponse("target_user_id must be a valid UUID", "INVALID_FIELD", requestId, traceId);
+        }
+
         // Delete main metadata
         nk.storageDelete([{
             collection: PLAYER_METADATA_COLLECTION,
             key: PLAYER_METADATA_KEY,
-            userId: ctx.userId
+            userId: targetUserId
         }]);
 
+        for (var i = 0; i < LEGACY_PROFILE_STORAGE_LOCATIONS.length; i++) {
+            var location = LEGACY_PROFILE_STORAGE_LOCATIONS[i];
+            try {
+                nk.storageDelete([{
+                    collection: location.collection,
+                    key: location.key,
+                    userId: targetUserId
+                }]);
+            } catch (legacyErr) {
+                // Best effort cleanup for legacy keys.
+            }
+        }
+
         // Cleanup legacy locations
-        cleanupLegacyMetadataAsync(nk, logger, ctx.userId, requestId);
+        cleanupLegacyMetadataAsync(nk, logger, targetUserId, requestId);
+        invalidateProfileReadCaches(targetUserId);
 
-        logger.info("[AdminDeletePlayerMetadata:" + requestId + "] Deleted metadata for user: " + ctx.userId);
+        logger.info("[AdminDeletePlayerMetadata:" + requestId + "] Deleted metadata for user: " + targetUserId);
 
-        return JSON.stringify({
-            success: true,
+        return buildSuccessResponse({
+            message: "Player metadata deleted successfully",
+            targetUserId: targetUserId
+        }, requestId, traceId, {
             message: "Player metadata deleted successfully"
         });
     } catch (err) {
         logger.error("[AdminDeletePlayerMetadata:" + requestId + "] Error: " + err.message);
-        return JSON.stringify({
-            success: false,
-            error: "Failed to delete metadata",
-            error_code: "STORAGE_ERROR"
-        });
+        return buildErrorResponse("Failed to delete metadata", "STORAGE_ERROR", requestId, traceId);
     }
 }
 /**
@@ -13458,39 +14014,37 @@ function getAllLeaderboards(ctx, logger, nk, payload) {
         });
     }
 
-    // Validate required fields
-    if (!data.device_id || !data.game_id) {
+    // Validate required fields (device_id is optional for compatibility)
+    var deviceId = data.device_id || data.deviceId || "";
+    var gameId = data.game_id || data.gameId || "";
+    if (!gameId) {
         return JSON.stringify({
             success: false,
-            error: "Missing required fields: device_id, game_id"
+            error: "Missing required field: game_id"
         });
     }
 
-    var deviceId = data.device_id;
-    var gameId = data.game_id;
-    var limit = data.limit || 10;
+    var parsedLimit = parseInt(data.limit, 10);
+    var limit = isNaN(parsedLimit) ? 10 : parsedLimit;
+    if (limit < 1) limit = 1;
+    if (limit > 100) limit = 100;
+
+    // Prefer authenticated Nakama user id, fallback through known identity fields.
+    var userId = ctx.userId ||
+        data.owner_id || data.ownerId ||
+        data.nakama_user_id || data.nakamaUserId ||
+        data.user_id || data.userId ||
+        data.api_user_id || data.apiUserId ||
+        deviceId;
+
+    if (!userId) {
+        return JSON.stringify({
+            success: false,
+            error: "Missing identity. Expected authenticated user or owner_id/user_id."
+        });
+    }
 
     try {
-        // Get identity to find userId
-        var collection = "quizverse";
-        var key = "identity:" + deviceId + ":" + gameId;
-
-        var records = nk.storageRead([{
-            collection: collection,
-            key: key,
-            userId: "00000000-0000-0000-0000-000000000000"
-        }]);
-
-        if (!records || records.length === 0 || !records[0].value) {
-            return JSON.stringify({
-                success: false,
-                error: "Identity not found. Please call create_or_sync_user first."
-            });
-        }
-
-        var identity = records[0].value;
-        var userId = ctx.userId || deviceId;
-
         // Build list of all leaderboard IDs to query
         var leaderboardIds = [];
 
@@ -15035,6 +15589,15 @@ function updatePlayerMetadata(nk, logger, userId, gameId, metadata) {
         if (metadata.account_status) playerMeta.account_status = metadata.account_status;
         if (metadata.wallet_address) playerMeta.wallet_address = metadata.wallet_address;
         if (metadata.is_adult) playerMeta.is_adult = metadata.is_adult;
+
+        // Preserve avatar url from both snake_case and camelCase clients.
+        if (metadata.avatar_url) {
+            playerMeta.avatar_url = metadata.avatar_url;
+        } else if (metadata.avatarUrl) {
+            playerMeta.avatar_url = metadata.avatarUrl;
+        } else if (metadata.avatar) {
+            playerMeta.avatar_url = metadata.avatar;
+        }
     }
 
     // Track gameId
@@ -15103,45 +15666,60 @@ function updatePlayerMetadata(nk, logger, userId, gameId, metadata) {
  * Get all games played by user with wallet balances and stats
  */
 function rpcGetPlayerPortfolio(ctx, logger, nk, payload) {
+    var requestId = generateShortUUID();
+    var traceId = getProfileTraceId(ctx, requestId);
     logger.info('[RPC] get_player_portfolio called');
 
     try {
         var userId = ctx.userId;
         if (!userId) {
-            return JSON.stringify({
-                success: false,
-                error: 'User not authenticated'
-            });
+            return buildErrorResponse("User not authenticated", "AUTH_REQUIRED", requestId, traceId);
+        }
+
+        var parsedPayload = {};
+        try {
+            parsedPayload = JSON.parse(payload || "{}");
+        } catch (parseErr) {
+            return buildErrorResponse("Invalid JSON payload", "INVALID_JSON", requestId, traceId);
+        }
+
+        if (parsedPayload.user_id && parsedPayload.user_id !== userId) {
+            var adminCheck = checkAdminPermission(nk, logger, userId);
+            if (!adminCheck.isAdmin) {
+                return buildErrorResponse("Cannot read another user's portfolio", "FORBIDDEN", requestId, traceId);
+            }
+            userId = parsedPayload.user_id;
         }
 
         // Get player metadata
         var metadata;
         try {
-            var records = nk.storageRead([{
-                collection: "player_data",
-                key: "player_metadata",
-                userId: userId
-            }]);
+            var readResult = readProfileRecordWithFallback(nk, userId);
+            if (!readResult.found) {
+                return buildErrorResponse("No player metadata found", "NOT_FOUND", requestId, traceId);
+            }
 
-            if (records && records.length > 0 && records[0].value) {
-                metadata = records[0].value;
-            } else {
-                return JSON.stringify({
-                    success: false,
-                    error: 'No player metadata found'
-                });
+            var migration = migrateProfileMetadataSchema(readResult.value, userId, ctx, new Date().toISOString());
+            metadata = migration.profile;
+
+            if (migration.migrated || !readResult.isPrimary) {
+                persistProfileMigrationIfNeeded(nk, logger, userId, metadata, requestId);
             }
         } catch (err) {
-            return JSON.stringify({
-                success: false,
-                error: 'Failed to read metadata: ' + err.message
-            });
+            return buildErrorResponse("Failed to read metadata", "STORAGE_ERROR", requestId, traceId, { cause: err.message });
         }
 
         // Get wallet balances for each game
         var gamesWithWallets = [];
-        for (var i = 0; i < metadata.games.length; i++) {
-            var game = metadata.games[i];
+        var games = Array.isArray(metadata.games) ? metadata.games : [];
+        for (var i = 0; i < games.length; i++) {
+            var game = games[i];
+            var gameSnapshot = {};
+            for (var gameKey in game) {
+                if (Object.prototype.hasOwnProperty.call(game, gameKey)) {
+                    gameSnapshot[gameKey] = game[gameKey];
+                }
+            }
             var walletKey = "wallet:" + userId + ":" + game.game_id;
 
             try {
@@ -15152,13 +15730,13 @@ function rpcGetPlayerPortfolio(ctx, logger, nk, payload) {
                 }]);
 
                 if (walletRecords && walletRecords.length > 0) {
-                    game.wallet = walletRecords[0].value;
+                    gameSnapshot.wallet = walletRecords[0].value;
                 }
             } catch (walletErr) {
                 logger.warn("[Portfolio] Could not read wallet for game " + game.game_id);
             }
 
-            gamesWithWallets.push(game);
+            gamesWithWallets.push(gameSnapshot);
         }
 
         // Get global wallet
@@ -15177,13 +15755,20 @@ function rpcGetPlayerPortfolio(ctx, logger, nk, payload) {
             logger.warn("[Portfolio] Could not read global wallet");
         }
 
-        return JSON.stringify({
-            success: true,
+        var data = {
+            userId: userId,
+            metadata: metadata,
+            totalGames: metadata.total_games || gamesWithWallets.length,
+            games: gamesWithWallets,
+            globalWallet: globalWallet
+        };
+
+        return buildSuccessResponse(data, requestId, traceId, {
             user_id: userId,
             cognito_user_id: metadata.cognito_user_id,
             email: metadata.email,
             account_status: metadata.account_status,
-            total_games: metadata.total_games,
+            total_games: metadata.total_games || gamesWithWallets.length,
             games: gamesWithWallets,
             global_wallet: globalWallet,
             created_at: metadata.created_at,
@@ -15192,10 +15777,7 @@ function rpcGetPlayerPortfolio(ctx, logger, nk, payload) {
 
     } catch (err) {
         logger.error('[RPC] get_player_portfolio - Error: ' + err.message);
-        return JSON.stringify({
-            success: false,
-            error: err.message
-        });
+        return buildErrorResponse("Failed to load player portfolio", "INTERNAL_ERROR", requestId, traceId, { cause: err.message });
     }
 }
 
@@ -15676,32 +16258,30 @@ function rpcGetLeaderboard(ctx, logger, nk, payload) {
  * }
  */
 function rpcCheckGeoAndUpdateProfile(ctx, logger, nk, payload) {
+    var requestId = generateShortUUID();
+    var traceId = getProfileTraceId(ctx, requestId);
     logger.info('[RPC] check_geo_and_update_profile called');
 
     try {
         // 2.1 Validate input
         if (!ctx.userId) {
-            return JSON.stringify({
-                success: false,
-                error: 'Authentication required'
-            });
+            return buildErrorResponse("Authentication required", "AUTH_REQUIRED", requestId, traceId);
         }
 
-        var data = JSON.parse(payload || '{}');
+        var data;
+        try {
+            data = JSON.parse(payload || '{}');
+        } catch (parseErr) {
+            return buildErrorResponse("Invalid JSON payload", "INVALID_JSON", requestId, traceId);
+        }
 
         // Ensure latitude and longitude exist
         if (data.latitude === undefined || data.latitude === null) {
-            return JSON.stringify({
-                success: false,
-                error: 'latitude is required'
-            });
+            return buildErrorResponse("latitude is required", "MISSING_FIELD", requestId, traceId, { field: "latitude" });
         }
 
         if (data.longitude === undefined || data.longitude === null) {
-            return JSON.stringify({
-                success: false,
-                error: 'longitude is required'
-            });
+            return buildErrorResponse("longitude is required", "MISSING_FIELD", requestId, traceId, { field: "longitude" });
         }
 
         // Ensure values are numeric
@@ -15709,25 +16289,16 @@ function rpcCheckGeoAndUpdateProfile(ctx, logger, nk, payload) {
         var longitude = Number(data.longitude);
 
         if (isNaN(latitude) || isNaN(longitude)) {
-            return JSON.stringify({
-                success: false,
-                error: 'latitude and longitude must be numeric values'
-            });
+            return buildErrorResponse("latitude and longitude must be numeric values", "INVALID_FIELD", requestId, traceId);
         }
 
         // Ensure they fall within valid GPS ranges
         if (latitude < -90 || latitude > 90) {
-            return JSON.stringify({
-                success: false,
-                error: 'latitude must be between -90 and 90'
-            });
+            return buildErrorResponse("latitude must be between -90 and 90", "INVALID_FIELD", requestId, traceId, { field: "latitude" });
         }
 
         if (longitude < -180 || longitude > 180) {
-            return JSON.stringify({
-                success: false,
-                error: 'longitude must be between -180 and 180'
-            });
+            return buildErrorResponse("longitude must be between -180 and 180", "INVALID_FIELD", requestId, traceId, { field: "longitude" });
         }
 
         logger.info('[RPC] check_geo_and_update_profile - Valid coordinates: ' + latitude + ', ' + longitude);
@@ -15737,10 +16308,7 @@ function rpcCheckGeoAndUpdateProfile(ctx, logger, nk, payload) {
 
         if (!apiKey) {
             logger.error('[RPC] check_geo_and_update_profile - GOOGLE_MAPS_API_KEY not configured');
-            return JSON.stringify({
-                success: false,
-                error: 'Geocoding service not configured'
-            });
+            return buildErrorResponse("Geocoding service not configured", "SERVICE_UNAVAILABLE", requestId, traceId);
         }
 
         var geocodeUrl = 'https://maps.googleapis.com/maps/api/geocode/json?latlng=' +
@@ -15757,18 +16325,17 @@ function rpcCheckGeoAndUpdateProfile(ctx, logger, nk, payload) {
             );
         } catch (err) {
             logger.error('[RPC] check_geo_and_update_profile - Geocoding API request failed: ' + err.message);
-            return JSON.stringify({
-                success: false,
-                error: 'Failed to connect to geocoding service'
-            });
+            return buildErrorResponse("Failed to connect to geocoding service", "UPSTREAM_ERROR", requestId, traceId);
         }
 
         if (geocodeResponse.code !== 200) {
             logger.error('[RPC] check_geo_and_update_profile - Geocoding API returned code ' + geocodeResponse.code);
-            return JSON.stringify({
-                success: false,
-                error: 'Geocoding service returned error code ' + geocodeResponse.code
-            });
+            return buildErrorResponse(
+                "Geocoding service returned error code " + geocodeResponse.code,
+                "UPSTREAM_ERROR",
+                requestId,
+                traceId
+            );
         }
 
         // 2.3 Parse Response
@@ -15777,18 +16344,12 @@ function rpcCheckGeoAndUpdateProfile(ctx, logger, nk, payload) {
             geocodeData = JSON.parse(geocodeResponse.body);
         } catch (err) {
             logger.error('[RPC] check_geo_and_update_profile - Failed to parse geocoding response: ' + err.message);
-            return JSON.stringify({
-                success: false,
-                error: 'Invalid response from geocoding service'
-            });
+            return buildErrorResponse("Invalid response from geocoding service", "UPSTREAM_ERROR", requestId, traceId);
         }
 
         if (geocodeData.status !== 'OK' || !geocodeData.results || geocodeData.results.length === 0) {
             logger.warn('[RPC] check_geo_and_update_profile - No results from geocoding API: ' + geocodeData.status);
-            return JSON.stringify({
-                success: false,
-                error: 'Could not determine location from coordinates'
-            });
+            return buildErrorResponse("Could not determine location from coordinates", "NOT_FOUND", requestId, traceId);
         }
 
         // Extract country, region, and city from address_components
@@ -15838,26 +16399,27 @@ function rpcCheckGeoAndUpdateProfile(ctx, logger, nk, payload) {
 
         // 2.5 Update Nakama User Metadata
         var userId = ctx.userId;
-
-        // Read existing metadata
-        var collection = "player_data";
-        var key = "player_metadata";
+        var nowIso = new Date().toISOString();
         var playerMeta;
+        var profileVersion = null;
 
         try {
-            var records = nk.storageRead([{
-                collection: collection,
-                key: key,
-                userId: userId
-            }]);
-
-            if (records && records.length > 0 && records[0].value) {
-                playerMeta = records[0].value;
+            var readResult = readProfileRecordWithFallback(nk, userId);
+            if (readResult.found) {
+                var migrated = migrateProfileMetadataSchema(readResult.value, userId, ctx, nowIso);
+                playerMeta = migrated.profile;
+                profileVersion = readResult.isPrimary ? readResult.version : null;
                 logger.info('[RPC] check_geo_and_update_profile - Found existing metadata for user');
+
+                if (migrated.migrated || !readResult.isPrimary) {
+                    persistProfileMigrationIfNeeded(nk, logger, userId, playerMeta, requestId);
+                }
             } else {
                 playerMeta = {
                     user_id: userId,
-                    created_at: new Date().toISOString()
+                    created_at: nowIso,
+                    schemaVersion: PROFILE_SCHEMA_VERSION,
+                    profileVersion: 1
                 };
                 logger.info('[RPC] check_geo_and_update_profile - Creating new metadata for user');
             }
@@ -15865,7 +16427,9 @@ function rpcCheckGeoAndUpdateProfile(ctx, logger, nk, payload) {
             logger.warn('[RPC] check_geo_and_update_profile - Failed to read metadata: ' + err.message);
             playerMeta = {
                 user_id: userId,
-                created_at: new Date().toISOString()
+                created_at: nowIso,
+                schemaVersion: PROFILE_SCHEMA_VERSION,
+                profileVersion: 1
             };
         }
 
@@ -15875,21 +16439,30 @@ function rpcCheckGeoAndUpdateProfile(ctx, logger, nk, payload) {
         playerMeta.country = country;
         playerMeta.region = region;
         playerMeta.city = city;
-        playerMeta.location_updated_at = new Date().toISOString();
+        playerMeta.country_code = countryCode;
+        playerMeta.geo_location = countryCode;
+        playerMeta.location_updated_at = nowIso;
+        playerMeta.updated_at = nowIso;
+        playerMeta.schemaVersion = PROFILE_SCHEMA_VERSION;
+        playerMeta.profileVersion = (parseInt(playerMeta.profileVersion, 10) || 0) + 1;
+        playerMeta.version = playerMeta.profileVersion;
 
         // Write updated metadata
         try {
-            nk.storageWrite([{
-                collection: collection,
-                key: key,
+            var writeRequest = {
+                collection: PLAYER_METADATA_COLLECTION,
+                key: PLAYER_METADATA_KEY,
                 userId: userId,
                 value: playerMeta,
                 permissionRead: 1,
-                permissionWrite: 0,
-                version: "*"
-            }]);
+                permissionWrite: 0
+            };
+            writeRequest.version = profileVersion || "*";
+
+            nk.storageWrite([writeRequest]);
 
             logger.info('[RPC] check_geo_and_update_profile - Updated metadata for user ' + userId);
+            invalidateProfileReadCaches(userId);
 
             // Also update account metadata for quick access
             try {
@@ -15905,16 +16478,27 @@ function rpcCheckGeoAndUpdateProfile(ctx, logger, nk, payload) {
             }
         } catch (err) {
             logger.error('[RPC] check_geo_and_update_profile - Failed to write metadata: ' + err.message);
-            return JSON.stringify({
-                success: false,
-                error: 'Failed to update user profile with location data'
-            });
+            if (err.message && err.message.indexOf("version") !== -1) {
+                return buildErrorResponse(
+                    "Profile update conflict. Refresh profile and retry.",
+                    "VERSION_CONFLICT",
+                    requestId,
+                    traceId
+                );
+            }
+            return buildErrorResponse("Failed to update user profile with location data", "STORAGE_ERROR", requestId, traceId);
         }
 
         logger.info('[RPC] check_geo_and_update_profile - Complete. Allowed: ' + allowed);
 
         // Return result
-        return JSON.stringify({
+        return buildSuccessResponse({
+            allowed: allowed,
+            country: countryCode,
+            region: region,
+            city: city,
+            reason: reason
+        }, requestId, traceId, {
             allowed: allowed,
             country: countryCode,
             region: region,
@@ -15924,10 +16508,7 @@ function rpcCheckGeoAndUpdateProfile(ctx, logger, nk, payload) {
 
     } catch (err) {
         logger.error('[RPC] check_geo_and_update_profile - Error: ' + err.message);
-        return JSON.stringify({
-            success: false,
-            error: err.message
-        });
+        return buildErrorResponse(err.message || "Unexpected geo update error", "INTERNAL_ERROR", requestId, traceId);
     }
 }
 
@@ -28312,7 +28893,24 @@ function InitModule(ctx, logger, nk, initializer) {
     // PR #4: Caching | PR #5: Validation applied to leaderboard reads
     try {
         logger.info('[MultiGame] Initializing Multi-Game Identity, Wallet, and Leaderboard Module...');
-        initializer.registerRpc('create_or_sync_user', createOrSyncUser);
+        var wrappedCreateOrSyncUser = createOrSyncUser;
+        if (typeof globalThis !== 'undefined' && globalThis.Validation) {
+            wrappedCreateOrSyncUser = globalThis.Validation.withValidation(wrappedCreateOrSyncUser, 'create_or_sync_user', {
+                username: { type: 'string', required: true, minLength: 1, maxLength: 50 },
+                device_id: { type: 'string', required: true, minLength: 1, maxLength: 256 },
+                game_id: { type: 'string', required: true, minLength: 36, maxLength: 36 }
+            });
+            logger.info('[MultiGame] ✓ Validated: create_or_sync_user');
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedCreateOrSyncUser = globalThis.RateLimiting.withPresetRateLimit(wrappedCreateOrSyncUser, 'create_or_sync_user', 'AUTH');
+            logger.info('[MultiGame] ✓ Rate-limited (AUTH): create_or_sync_user');
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.Core) {
+            wrappedCreateOrSyncUser = globalThis.Core.wrapRpc(wrappedCreateOrSyncUser, 'create_or_sync_user', { logPayload: true });
+            logger.info('[MultiGame] ✓ Structured middleware: create_or_sync_user');
+        }
+        initializer.registerRpc('create_or_sync_user', wrappedCreateOrSyncUser);
         logger.info('[MultiGame] Registered RPC: create_or_sync_user');
         initializer.registerRpc('create_or_get_wallet', createOrGetWallet);
         logger.info('[MultiGame] Registered RPC: create_or_get_wallet');
@@ -28333,6 +28931,7 @@ function InitModule(ctx, logger, nk, initializer) {
             wrappedGetAllLeaderboards = globalThis.Caching.withCache(wrappedGetAllLeaderboards, 'get_all_leaderboards', globalThis.Caching.TTL.MEDIUM, { keyType: 'game' });
             logger.info('[MultiGame] ✓ Cached (MEDIUM/2m): get_all_leaderboards');
         }
+        wrappedGetAllLeaderboards = wrapRpcNeverThrow(wrappedGetAllLeaderboards, 'get_all_leaderboards');
         initializer.registerRpc('get_all_leaderboards', wrappedGetAllLeaderboards);
         logger.info('[MultiGame] Registered RPC: get_all_leaderboards');
         
@@ -28377,30 +28976,137 @@ function InitModule(ctx, logger, nk, initializer) {
         }
         initializer.registerRpc('get_leaderboard', wrappedGetLeaderboard);
         logger.info('[PlayerRPCs] Registered RPC: get_leaderboard');
-        initializer.registerRpc('check_geo_and_update_profile', rpcCheckGeoAndUpdateProfile);
+        var wrappedCheckGeoAndUpdateProfile = rpcCheckGeoAndUpdateProfile;
+        if (typeof globalThis !== 'undefined' && globalThis.Validation) {
+            wrappedCheckGeoAndUpdateProfile = globalThis.Validation.withValidation(
+                wrappedCheckGeoAndUpdateProfile,
+                'check_geo_and_update_profile',
+                {
+                    latitude: { type: 'number', required: true, min: -90, max: 90 },
+                    longitude: { type: 'number', required: true, min: -180, max: 180 }
+                }
+            );
+            logger.info('[PlayerRPCs] ✓ Validated: check_geo_and_update_profile');
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedCheckGeoAndUpdateProfile = globalThis.RateLimiting.withPresetRateLimit(
+                wrappedCheckGeoAndUpdateProfile,
+                'check_geo_and_update_profile',
+                'EXPENSIVE'
+            );
+            logger.info('[PlayerRPCs] ✓ Rate-limited (EXPENSIVE): check_geo_and_update_profile');
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.Caching) {
+            wrappedCheckGeoAndUpdateProfile = globalThis.Caching.withCacheInvalidation(
+                wrappedCheckGeoAndUpdateProfile,
+                'check_geo_and_update_profile',
+                ['get_player_metadata:{userId}*', 'get_player_portfolio:{userId}*']
+            );
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.Core) {
+            wrappedCheckGeoAndUpdateProfile = globalThis.Core.wrapRpc(
+                wrappedCheckGeoAndUpdateProfile,
+                'check_geo_and_update_profile',
+                { logPayload: true }
+            );
+        }
+        initializer.registerRpc('check_geo_and_update_profile', wrappedCheckGeoAndUpdateProfile);
         logger.info('[PlayerRPCs] Registered RPC: check_geo_and_update_profile');
 
         // Player Metadata & Portfolio RPCs
 
-        initializer.registerRpc('get_player_portfolio', rpcGetPlayerPortfolio);
+        var wrappedGetPlayerPortfolio = rpcGetPlayerPortfolio;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedGetPlayerPortfolio = globalThis.RateLimiting.withPresetRateLimit(
+                wrappedGetPlayerPortfolio,
+                'get_player_portfolio',
+                'READ'
+            );
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.Caching) {
+            wrappedGetPlayerPortfolio = globalThis.Caching.withCache(
+                wrappedGetPlayerPortfolio,
+                'get_player_portfolio',
+                globalThis.Caching.TTL.MEDIUM,
+                { keyType: 'user' }
+            );
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.Core) {
+            wrappedGetPlayerPortfolio = globalThis.Core.wrapRpc(wrappedGetPlayerPortfolio, 'get_player_portfolio', { logPayload: false });
+        }
+        initializer.registerRpc('get_player_portfolio', wrappedGetPlayerPortfolio);
         logger.info('[PlayerRPCs] Registered RPC: get_player_portfolio');
         //  initializer.registerRpc('rpc_update_player_metadata', rpcUpdatePlayerMetadata);
         // logger.info('[PlayerRPCs] Registered RPC: rpc_update_player_metadata');
 
 
-        initializer.registerRpc('rpc_update_player_metadata', rpcUpdatePlayerMetadataUnified);
+        var wrappedUpdatePlayerMetadata = rpcUpdatePlayerMetadataUnified;
+        if (typeof globalThis !== 'undefined' && globalThis.Idempotency) {
+            wrappedUpdatePlayerMetadata = globalThis.Idempotency.withIdempotency(
+                wrappedUpdatePlayerMetadata,
+                'rpc_update_player_metadata',
+                { ttlSeconds: 300, autoGenerate: true }
+            );
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedUpdatePlayerMetadata = globalThis.RateLimiting.withPresetRateLimit(
+                wrappedUpdatePlayerMetadata,
+                'rpc_update_player_metadata',
+                'WRITE'
+            );
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.Caching) {
+            wrappedUpdatePlayerMetadata = globalThis.Caching.withCacheInvalidation(
+                wrappedUpdatePlayerMetadata,
+                'rpc_update_player_metadata',
+                ['get_player_metadata:{userId}*', 'get_player_portfolio:{userId}*']
+            );
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.Core) {
+            wrappedUpdatePlayerMetadata = globalThis.Core.wrapRpc(wrappedUpdatePlayerMetadata, 'rpc_update_player_metadata', { logPayload: true });
+        }
+        initializer.registerRpc('rpc_update_player_metadata', wrappedUpdatePlayerMetadata);
         logger.info('[PlayerRPCs] ✓ Registered: rpc_update_player_metadata (unified)');
 
-        // PR #4: Cache player metadata (LONG TTL - 5 minutes)
+        // PR #4: Cache player metadata (MEDIUM TTL - 2 minutes)
         var wrappedGetPlayerMetadata = rpcGetPlayerMetadata;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedGetPlayerMetadata = globalThis.RateLimiting.withPresetRateLimit(
+                wrappedGetPlayerMetadata,
+                'get_player_metadata',
+                'READ'
+            );
+            logger.info('[PlayerRPCs] ✓ Rate-limited (READ): get_player_metadata');
+        }
         if (typeof globalThis !== 'undefined' && globalThis.Caching) {
-            wrappedGetPlayerMetadata = globalThis.Caching.withCache(rpcGetPlayerMetadata, 'get_player_metadata', globalThis.Caching.TTL.LONG, { keyType: 'user' });
-            logger.info('[PlayerRPCs] ✓ Cached (LONG/5m): get_player_metadata');
+            wrappedGetPlayerMetadata = globalThis.Caching.withCache(wrappedGetPlayerMetadata, 'get_player_metadata', globalThis.Caching.TTL.MEDIUM, { keyType: 'user' });
+            logger.info('[PlayerRPCs] ✓ Cached (MEDIUM/2m): get_player_metadata');
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.Core) {
+            wrappedGetPlayerMetadata = globalThis.Core.wrapRpc(wrappedGetPlayerMetadata, 'get_player_metadata', { logPayload: false });
         }
         initializer.registerRpc('get_player_metadata', wrappedGetPlayerMetadata);
         logger.info('[PlayerRPCs] ✓ Registered: get_player_metadata');
 
-        initializer.registerRpc('admin_delete_player_metadata', rpcAdminDeletePlayerMetadata);
+        var wrappedAdminDeletePlayerMetadata = rpcAdminDeletePlayerMetadata;
+        if (typeof globalThis !== 'undefined' && globalThis.RateLimiting) {
+            wrappedAdminDeletePlayerMetadata = globalThis.RateLimiting.withPresetRateLimit(
+                wrappedAdminDeletePlayerMetadata,
+                'admin_delete_player_metadata',
+                'ADMIN'
+            );
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.Caching) {
+            wrappedAdminDeletePlayerMetadata = globalThis.Caching.withCacheInvalidation(
+                wrappedAdminDeletePlayerMetadata,
+                'admin_delete_player_metadata',
+                ['get_player_metadata:{userId}*', 'get_player_portfolio:{userId}*']
+            );
+        }
+        if (typeof globalThis !== 'undefined' && globalThis.Core) {
+            wrappedAdminDeletePlayerMetadata = globalThis.Core.wrapRpc(wrappedAdminDeletePlayerMetadata, 'admin_delete_player_metadata', { logPayload: true });
+        }
+        initializer.registerRpc('admin_delete_player_metadata', wrappedAdminDeletePlayerMetadata);
         logger.info('[PlayerRPCs] ✓ Registered: admin_delete_player_metadata');
 
 
