@@ -26,7 +26,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ivx/nakama-analytics:3.35.0
+    image: ivx/nakama-analytics:3.37.0
     # NOTE: Nakama's JS runtime only exposes env vars passed via `--runtime.env`.
     # OS env vars from the `environment:` block below are NOT automatically visible
     # to RPCs via `ctx.env`. The entrypoint below forwards each whitelisted var

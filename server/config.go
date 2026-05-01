@@ -726,6 +726,7 @@ type MetricsConfig struct {
 	PrometheusPort   int    `yaml:"prometheus_port" json:"prometheus_port" usage:"Port to expose Prometheus. If '0' Prometheus exports are disabled."`
 	Prefix           string `yaml:"prefix" json:"prefix" usage:"Prefix for metric names. Default is 'nakama', empty string '' disables the prefix."`
 	CustomPrefix     string `yaml:"custom_prefix" json:"custom_prefix" usage:"Prefix for custom runtime metric names. Default is 'custom', empty string '' disables the prefix."`
+	CustomScopeLimit int    `yaml:"custom_scope_limit" json:"custom_scope_limit" usage:"Maximum number of custom metric scopes. Default is 10,000, 0 disables the limit."`
 }
 
 func (cfg *MetricsConfig) Clone() *MetricsConfig {
@@ -744,6 +745,7 @@ func NewMetricsConfig() *MetricsConfig {
 		PrometheusPort:   0,
 		Prefix:           "nakama",
 		CustomPrefix:     "custom",
+		CustomScopeLimit: 10_000,
 	}
 }
 
@@ -838,6 +840,7 @@ type SocketConfig struct {
 	SSLCertificate       string            `yaml:"ssl_certificate" json:"ssl_certificate" usage:"Path to certificate file if you want the server to use SSL directly. Must also supply ssl_private_key. NOT recommended for production use."`
 	SSLPrivateKey        string            `yaml:"ssl_private_key" json:"ssl_private_key" usage:"Path to private key file if you want the server to use SSL directly. Must also supply ssl_certificate. NOT recommended for production use."`
 	ResponseHeaders      []string          `yaml:"response_headers" json:"response_headers" usage:"Additional headers to send to clients with every response. Values here are only used if the response would not otherwise contain a value for the specified headers."`
+	ProxyCount           int               `yaml:"proxy_count" json:"proxy_count" usage:"Number of proxies (such as load balancers) configured in front of the server. Default 1."`
 	Headers              map[string]string `yaml:"-" json:"-"` // Created by parsing ResponseHeaders above, not set from input args directly.
 	CertPEMBlock         []byte            `yaml:"-" json:"-"` // Created by fully reading the file contents of SSLCertificate, not set from input args directly.
 	KeyPEMBlock          []byte            `yaml:"-" json:"-"` // Created by fully reading the file contents of SSLPrivateKey, not set from input args directly.
@@ -917,6 +920,7 @@ func NewSocketConfig() *SocketConfig {
 		OutgoingQueueSize:    64,
 		SSLCertificate:       "",
 		SSLPrivateKey:        "",
+		ProxyCount:           1,
 	}
 }
 

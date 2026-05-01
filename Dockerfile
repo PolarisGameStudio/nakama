@@ -2,7 +2,7 @@
 #
 # Custom Nakama image that ships a Go plugin exposing native Prometheus
 # metrics for the analytics pipeline. The base binary is unchanged — this
-# image is interchangeable with `heroiclabs/nakama:3.35.0`.
+# image is interchangeable with `heroiclabs/nakama:3.37.0`.
 #
 # Why: Nakama's JS (Goja) runtime can't register Prometheus counters directly.
 # This Go plugin registers native counters/gauges with the default Prometheus
@@ -23,16 +23,16 @@
 #      it up without rebuilding the full image.
 #
 # Plugin / runtime version MUST match. Nakama Go plugins are ABI-coupled to
-# the exact runtime version; both stages use the 3.35.0 tag.
+# the exact runtime version; both stages use the 3.37.0 tag.
 
 # ─── Stage 1 : build the Go plugin ─────────────────────────
-FROM heroiclabs/nakama-pluginbuilder:3.35.0 AS builder
+FROM heroiclabs/nakama-pluginbuilder:3.37.0 AS builder
 
 WORKDIR /build
 
 # Copy the plugin source files. The dev compose stack uses the prebuilt
-# heroiclabs/nakama:3.35.0 server image which is ABI-coupled to
-# nakama-common v1.44.0, so we materialise a one-off go.mod here pinning
+# heroiclabs/nakama:3.37.0 server image which is ABI-coupled to
+# nakama-common v1.45.0, so we materialise a one-off go.mod here pinning
 # that exact version (and pull every transitive dep from the proxy via
 # `go mod tidy`). Production uses a different path — the same source
 # files are picked up automatically by Dockerfile.production stage 3
@@ -42,12 +42,12 @@ COPY data/modules/analytics_metrics/*.go ./
 RUN cat > go.mod <<'EOF'
 module github.com/ivx/nakama-analytics-metrics
 
-// Pinned to v1.44.0 because the dev compose server is heroiclabs/nakama:3.35.0
-// which ships v1.44.0. Bump in lockstep with the pluginbuilder tag above.
+// Pinned to v1.45.0 because the dev compose server is heroiclabs/nakama:3.37.0
+// which ships v1.45.0. Bump in lockstep with the pluginbuilder tag above.
 go 1.25
 
 require (
-    github.com/heroiclabs/nakama-common v1.44.0
+    github.com/heroiclabs/nakama-common v1.45.0
     github.com/prometheus/client_golang v1.20.5
 )
 EOF
@@ -115,7 +115,7 @@ RUN node postbuild.js
 RUN node -c index.js || (echo "Regenerated index.js failed syntax check" && exit 1)
 
 # ─── Stage 3 : assemble the runtime image ──────────────────
-FROM registry.heroiclabs.com/heroiclabs/nakama:3.35.0
+FROM registry.heroiclabs.com/heroiclabs/nakama:3.37.0
 
 # Drop the built plugin into the runtime modules directory. Nakama discovers
 # and loads all .so files from this directory automatically alongside JS
