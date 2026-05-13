@@ -134,9 +134,7 @@ namespace AnalyticsAlerts {
   // ---------------------------------------------------------------------------
   export function init(ctx: nkruntime.Context, logger: nkruntime.Logger): void {
     try {
-      if (ctx.env && ctx.env[WEBHOOK_ENV]) {
-        webhookUrl = ctx.env[WEBHOOK_ENV] || "";
-      }
+      refreshEnvFromContext(ctx, logger, false);
       logger.info(
         "[AnalyticsAlerts] init pod=%s webhook=%s interval=%sms",
         podId,
@@ -160,6 +158,27 @@ namespace AnalyticsAlerts {
       }
     } catch (e: any) {
       logger.warn("[AnalyticsAlerts] init failed: " + (e && e.message ? e.message : String(e)));
+    }
+  }
+
+  function refreshEnvFromContext(
+    ctx: nkruntime.Context,
+    logger: nkruntime.Logger,
+    refreshInsights: boolean,
+  ): void {
+    try {
+      var env = ctx && ctx.env ? ctx.env : {};
+      var nextWebhook = env[WEBHOOK_ENV] || env["DISCORD_QV_OPS_WEBHOOK_URL"] || "";
+      if (nextWebhook) {
+        webhookUrl = nextWebhook;
+      }
+      if (refreshInsights && typeof InsightsAggregator !== "undefined" && InsightsAggregator
+        && typeof InsightsAggregator.init === "function") {
+        InsightsAggregator.init(ctx, logger);
+      }
+    } catch (e: any) {
+      logger.warn("[AnalyticsAlerts] env refresh failed: " +
+        (e && e.message ? e.message : String(e)));
     }
   }
 
@@ -833,9 +852,12 @@ namespace AnalyticsAlerts {
   // ---------------------------------------------------------------------------
   // runSchedulerTick — opportunistic + leader-elected post for the last closed slot.
   // ---------------------------------------------------------------------------
-  export function runSchedulerTick(nk: nkruntime.Nakama, logger: nkruntime.Logger): {
+  export function runSchedulerTick(nk: nkruntime.Nakama, logger: nkruntime.Logger, ctx?: nkruntime.Context): {
     posted: boolean; reason: string; slotIso?: string;
   } {
+    if (ctx) {
+      refreshEnvFromContext(ctx, logger, true);
+    }
     if (!webhookUrl) return { posted: false, reason: "webhook_not_configured" };
 
     var now = Date.now();
@@ -940,6 +962,7 @@ namespace AnalyticsAlerts {
         var start = Date.now();
         var userId: string | undefined;
         try { userId = ctx && ctx.userId ? ctx.userId : undefined; } catch (_) {}
+        refreshEnvFromContext(ctx, rpcLogger, false);
         try {
           var out = fn(ctx, rpcLogger, nk, payload);
           recordSample(nk, rpcLogger, id, Date.now() - start, true, undefined, userId);
@@ -951,6 +974,9 @@ namespace AnalyticsAlerts {
         }
       };
       initializer.registerRpc(id, wrapped);
+    };
+    proxy.registerMatch = function (id: string, handler: nkruntime.MatchHandler<any>) {
+      initializer.registerMatch(id, handler);
     };
     logger.info("[AnalyticsAlerts] initializer instrumented — all RPCs will be sampled");
     return proxy as nkruntime.Initializer;
@@ -965,16 +991,17 @@ namespace AnalyticsAlerts {
     nk: nkruntime.Nakama,
     _payload: string,
   ): string {
-    var res = runSchedulerTick(nk, logger);
+    var res = runSchedulerTick(nk, logger, ctx);
     return JSON.stringify({ success: true, data: res });
   }
 
   function rpcStatus(
-    _ctx: nkruntime.Context,
-    _logger: nkruntime.Logger,
+    ctx: nkruntime.Context,
+    logger: nkruntime.Logger,
     nk: nkruntime.Nakama,
     _payload: string,
   ): string {
+    refreshEnvFromContext(ctx, logger, false);
     var lastPosted = getLastPostedSlot(nk);
     var nextSlotStart = lastClosedSlotStart(SUMMARY_INTERVAL_MS, Date.now());
     return JSON.stringify({
