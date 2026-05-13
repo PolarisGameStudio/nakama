@@ -155,6 +155,12 @@ async function fetchNakamaRpc(rpcId, payload, auth) {
 }
 
 async function validateAdminToken(token) {
+  // Local-development override: when ADMIN_DASHBOARD_DEV_BYPASS=1 is set we
+  // skip the upstream Nakama auth check. Used solely for local screenshot /
+  // smoke-test runs against an unconfigured Nakama; never enable in prod.
+  if (process.env.ADMIN_DASHBOARD_DEV_BYPASS === "1") {
+    return { role: "admin" };
+  }
   if (!token) return false;
   const result = await fetchNakamaRpc("admin_health_check", {}, { type: "bearer", token });
   if (!result.ok || !result.body || result.body.success === false) return false;
@@ -165,6 +171,19 @@ async function validateAdminToken(token) {
 
 async function handleLogin(req, res) {
   const body = await readJson(req);
+  if (process.env.ADMIN_DASHBOARD_DEV_BYPASS === "1") {
+    // Synthesize a session that the SPA will store and replay; the proxy
+    // ignores the token contents in dev-bypass mode. Match the legacy
+    // admin_login response shape — token/role/username/expiresAt at the top.
+    sendJson(res, 200, {
+      success: true,
+      token: "dev-bypass-token",
+      role: "admin",
+      username: body.username || "admin",
+      expiresAt: Math.floor(Date.now() / 1000) + 86400,
+    });
+    return;
+  }
   const result = await fetchNakamaRpc(
     "admin_login",
     { username: body.username, password: body.password },

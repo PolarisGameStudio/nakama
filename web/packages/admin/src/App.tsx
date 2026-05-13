@@ -28,6 +28,13 @@ const AnalyticsPage = lazy(() => import("./pages/AnalyticsPage"));
 const ConfigExportPage = lazy(() => import("./pages/ConfigExportPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 const DevGuidePage = lazy(() => import("./pages/DevGuidePage"));
+const FunnelsPage = lazy(() => import("./pages/FunnelsPage"));
+const MetricsPage = lazy(() => import("./pages/MetricsPage"));
+const RoasPage = lazy(() => import("./pages/RoasPage"));
+const CategoryLabelsPage = lazy(() => import("./pages/CategoryLabelsPage"));
+const IntegrationsPage = lazy(() => import("./pages/IntegrationsPage"));
+const SessionsPage = lazy(() => import("./pages/SessionsPage"));
+const ManagedAudiencesPage = lazy(() => import("./pages/ManagedAudiencesPage"));
 
 function Loading() {
   return (
@@ -72,6 +79,13 @@ function ProtectedRoutes() {
         <Route path="config-export" element={<ConfigExportPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="dev-guide" element={<DevGuidePage />} />
+        <Route path="funnels" element={<FunnelsPage />} />
+        <Route path="metrics" element={<MetricsPage />} />
+        <Route path="roas" element={<RoasPage />} />
+        <Route path="category-labels" element={<CategoryLabelsPage />} />
+        <Route path="integrations" element={<IntegrationsPage />} />
+        <Route path="sessions" element={<SessionsPage />} />
+        <Route path="managed-audiences" element={<ManagedAudiencesPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

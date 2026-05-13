@@ -30,6 +30,11 @@ import {
   Sun,
   Moon,
   LogOut,
+  Filter,
+  Activity,
+  DollarSign,
+  Tags,
+  Plug,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAdminStore } from "@/stores/admin-store";
@@ -65,7 +70,18 @@ const NAV_GROUPS: NavGroup[] = [
       { label: "Live Events", to: "/events", icon: CalendarClock },
       { label: "Experiments", to: "/experiments", icon: FlaskConical },
       { label: "Audiences", to: "/audiences", icon: UsersRound },
+      { label: "Managed Audiences", to: "/managed-audiences", icon: Database },
       { label: "Messages", to: "/messages", icon: MessageSquare },
+      { label: "Category Labels", to: "/category-labels", icon: Tags },
+    ],
+  },
+  {
+    label: "Performance",
+    items: [
+      { label: "Funnels", to: "/funnels", icon: Filter },
+      { label: "Metrics", to: "/metrics", icon: Activity },
+      { label: "RoAS", to: "/roas", icon: DollarSign },
+      { label: "Sessions", to: "/sessions", icon: Activity },
     ],
   },
   {
@@ -99,6 +115,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: "System",
     items: [
+      { label: "Integrations", to: "/integrations", icon: Plug },
       { label: "Config Export", to: "/config-export", icon: Download },
       { label: "Settings", to: "/settings", icon: Settings },
       { label: "Developer Guide", to: "/dev-guide", icon: BookOpen },
