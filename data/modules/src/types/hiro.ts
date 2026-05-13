@@ -270,6 +270,18 @@ namespace Hiro {
     operator: "best" | "set" | "incr" | "decr";
     sortOrder: "asc" | "desc";
     tiers: EventLeaderboardTier[];
+    /**
+     * Per-event override of the server-side score ceiling. Submissions over
+     * this value are rejected. Defaults to 10,000,000 when unset. Set per
+     * event when legitimate scores can exceed the default (e.g. cumulative
+     * weekly events).
+     */
+    maxScore?: number;
+    /**
+     * When true, allows reward claim before the event window ends. Defaults
+     * to false — claim is gated until now > endAt so rankings are final.
+     */
+    allowClaimDuringEvent?: boolean;
   }
 
   export interface EventLeaderboardTier {

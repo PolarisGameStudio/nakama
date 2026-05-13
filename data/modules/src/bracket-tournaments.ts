@@ -133,20 +133,51 @@ namespace BracketTournaments {
     return JSON.parse(body);
   }
 
+  // Soft-cap timeouts so a slow Bracket can't hang a client RPC for 15s × N
+  // sub-calls. status() does up to 7 sub-calls — at 8s each that caps at 56s
+  // worst case, which is still gated by Nakama's RPC timeout. Worth tuning
+  // per-call if needed (write methods may legitimately need more).
+  var BRACKET_REQUEST_TIMEOUT_MS = 8000;
+
   function bracketRequest(nk: nkruntime.Nakama, cfg: BracketConfig, method: nkruntime.RequestMethod, path: string, body: any, token: string): any {
     var headers: { [key: string]: string } = {
       "Content-Type": "application/json",
       "Authorization": "Bearer " + token
     };
     var payload = body === null || body === undefined ? "" : JSON.stringify(body);
-    var resp: any = nk.httpRequest(cfg.baseUrl + path, method, headers, payload, 15000);
+    var resp: any = nk.httpRequest(cfg.baseUrl + path, method, headers, payload, BRACKET_REQUEST_TIMEOUT_MS);
+
+    // 401 = token expired or revoked mid-session. Refresh once and retry.
+    if (resp.code === 401) {
+      invalidateBracketToken(cfg);
+      var freshToken = bracketLogin(nk, cfg);
+      headers["Authorization"] = "Bearer " + freshToken;
+      resp = nk.httpRequest(cfg.baseUrl + path, method, headers, payload, BRACKET_REQUEST_TIMEOUT_MS);
+    }
     if (resp.code < 200 || resp.code >= 300) {
       throw new Error("Bracket " + method.toUpperCase() + " " + path + " failed: HTTP " + resp.code + " " + resp.body);
     }
     return parseJson(resp.body);
   }
 
+  // ── Token cache ──────────────────────────────────────────────────────
+  // Bracket access tokens are JWTs that survive minutes-to-hours; logging in
+  // on every RPC saturates the auth endpoint AND ships username/password over
+  // the wire N times per minute. We cache by baseUrl+email; cache lives in
+  // module scope (per goja instance, fine for our deployment topology).
+  var __bracketTokenCache: { [cacheKey: string]: { token: string; fetchedAt: number } } = {};
+  var BRACKET_TOKEN_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+  function bracketTokenCacheKey(cfg: BracketConfig): string {
+    return cfg.baseUrl + "|" + cfg.email;
+  }
+
   function bracketLogin(nk: nkruntime.Nakama, cfg: BracketConfig): string {
+    var key = bracketTokenCacheKey(cfg);
+    var cached = __bracketTokenCache[key];
+    if (cached && (Date.now() - cached.fetchedAt) < BRACKET_TOKEN_TTL_MS) {
+      return cached.token;
+    }
     var body = "username=" + encodeURIComponent(cfg.email) + "&password=" + encodeURIComponent(cfg.password);
     var resp: any = nk.httpRequest(
       cfg.baseUrl + "/token",
@@ -160,7 +191,12 @@ namespace BracketTournaments {
     }
     var parsed = parseJson(resp.body);
     if (!parsed.access_token) throw new Error("Bracket login response did not include access_token");
+    __bracketTokenCache[key] = { token: parsed.access_token, fetchedAt: Date.now() };
     return parsed.access_token;
+  }
+
+  function invalidateBracketToken(cfg: BracketConfig): void {
+    delete __bracketTokenCache[bracketTokenCacheKey(cfg)];
   }
 
   function dashboardUrl(cfg: BracketConfig, slug: string): string {
@@ -279,15 +315,26 @@ namespace BracketTournaments {
     };
   }
 
+  function softGet(nk: nkruntime.Nakama, cfg: BracketConfig, token: string, path: string, fallback: any): any {
+    // Used for endpoints that can legitimately 404/500 on a fresh tournament
+    // (rankings before any match played, next_stage_rankings on single-stage).
+    // The primary tournament/stages/players/teams calls MUST succeed.
+    try {
+      return extractData(bracketRequest(nk, cfg, "get", path, null, token));
+    } catch (e) {
+      return fallback;
+    }
+  }
+
   function refreshBracketSnapshot(nk: nkruntime.Nakama, cfg: BracketConfig, token: string, mapping: TournamentMapping): void {
     var tournament = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id, null, token));
     var playersResp = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/players?limit=100", null, token));
     var teamsResp = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/teams?limit=100", null, token));
     var stagesResp = bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/stages", null, token);
     var stages = extractData(stagesResp) || [];
-    var courts = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/courts", null, token)) || [];
-    var rankings = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/rankings", null, token)) || [];
-    var nextStageRankings = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/next_stage_rankings", null, token)) || {};
+    var courts = softGet(nk, cfg, token, "/tournaments/" + mapping.bracket.tournament_id + "/courts", []) || [];
+    var rankings = softGet(nk, cfg, token, "/tournaments/" + mapping.bracket.tournament_id + "/rankings", []) || [];
+    var nextStageRankings = softGet(nk, cfg, token, "/tournaments/" + mapping.bracket.tournament_id + "/next_stage_rankings", {}) || {};
     var allMatches = flattenMatches(stages);
     var stageItem = findStageItem(stages, mapping.bracket.stage_item_id);
     var players = playersResp && playersResp.players ? playersResp.players : [];
@@ -348,10 +395,19 @@ namespace BracketTournaments {
     return String(player.external_id || player.externalId || player.user_id || player.userId || (teamExternalIdValue + ":player_" + (index + 1)));
   }
 
+  function safeDelete(nk: nkruntime.Nakama, cfg: BracketConfig, token: string, path: string): void {
+    try {
+      bracketRequest(nk, cfg, "delete", path, null, token);
+    } catch (e) {
+      // best-effort cleanup; intentionally swallow
+    }
+  }
+
   function createBracketTournament(nk: nkruntime.Nakama, cfg: BracketConfig, token: string, data: any, gameId: string, flavor: Flavor, slug: string): TournamentMapping {
     var startTime = data.starts_at || data.startsAt || new Date().toISOString();
     var teamCount = Number(data.team_count || data.teamCount || (data.teams ? data.teams.length : 0));
     if (!teamCount || teamCount < 2) throw new Error("team_count or at least two teams are required");
+    if (teamCount > 256) throw new Error("team_count must be <= 256 (Bracket service hard cap)");
 
     var tournament = extractData(bracketRequest(nk, cfg, "post", "/tournaments", {
       club_id: cfg.clubId,
@@ -365,14 +421,23 @@ namespace BracketTournaments {
       margin_minutes: Number(data.margin_minutes || data.marginMinutes || 5)
     }, token));
 
-    var stage = extractData(bracketRequest(nk, cfg, "post", "/tournaments/" + tournament.id + "/stages", {}, token));
-    var stageItem = extractData(bracketRequest(nk, cfg, "post", "/tournaments/" + tournament.id + "/stage_items", {
-      stage_id: stage.id,
-      name: data.stage_item_name || data.stageItemName || data.name || null,
-      type: flavor,
-      team_count: teamCount,
-      ranking_id: data.ranking_id || data.rankingId || null
-    }, token));
+    // From here on, anything that throws must roll back the orphan tournament
+    // in Bracket so a retry doesn't leak rows.
+    var stage: any;
+    var stageItem: any;
+    try {
+      stage = extractData(bracketRequest(nk, cfg, "post", "/tournaments/" + tournament.id + "/stages", {}, token));
+      stageItem = extractData(bracketRequest(nk, cfg, "post", "/tournaments/" + tournament.id + "/stage_items", {
+        stage_id: stage.id,
+        name: data.stage_item_name || data.stageItemName || data.name || null,
+        type: flavor,
+        team_count: teamCount,
+        ranking_id: data.ranking_id || data.rankingId || null
+      }, token));
+    } catch (e) {
+      safeDelete(nk, cfg, token, "/tournaments/" + tournament.id);
+      throw e;
+    }
 
     var created = nowIso();
     var mapping: TournamentMapping = {
@@ -470,7 +535,7 @@ namespace BracketTournaments {
     });
   }
 
-  function submitMatchResult(nk: nkruntime.Nakama, cfg: BracketConfig, token: string, mapping: TournamentMapping, data: any): any {
+  function submitMatchResult(ctx: nkruntime.Context, nk: nkruntime.Nakama, cfg: BracketConfig, token: string, mapping: TournamentMapping, data: any): any {
     refreshBracketSnapshot(nk, cfg, token, mapping);
     var matchId = Number(data.bracket_match_id || data.bracketMatchId || data.match_id || data.matchId);
     if (!matchId) throw new Error("bracket_match_id is required");
@@ -482,8 +547,24 @@ namespace BracketTournaments {
     if (existing && existing.result_hash === hash) {
       return { duplicate: true, match_id: matchId };
     }
-    if (existing && existing.result_hash !== hash && data.force !== true) {
-      throw new Error("result already submitted with a different score; pass force=true to overwrite");
+    if (existing && existing.result_hash !== hash) {
+      if (data.force !== true) {
+        throw new Error("result already submitted with a different score; pass force=true (admin only) to overwrite");
+      }
+      // force=true is a destructive overwrite — gate to admin or the original
+      // creator. Without this, any player could rewrite any other player's
+      // result.
+      var callerId = ctx.userId || "";
+      var isAdmin = false;
+      try {
+        RpcHelpers.requireAdmin(ctx, nk);
+        isAdmin = true;
+      } catch (e) {
+        isAdmin = false;
+      }
+      if (!isAdmin && callerId !== mapping.created_by) {
+        throw new Error("force=true overwrite requires admin context or matching created_by");
+      }
     }
 
     var score1 = Number(data.stage_item_input1_score || data.score1 || data.team1_score || data.team1Score || 0);
@@ -596,11 +677,75 @@ namespace BracketTournaments {
       var mapping = requireMapping(nk, data);
       var cfg = config(ctx);
       var token = bracketLogin(nk, cfg);
-      var submit = submitMatchResult(nk, cfg, token, mapping, data);
+      var submit = submitMatchResult(ctx, nk, cfg, token, mapping, data);
       writeMapping(nk, mapping);
       return RpcHelpers.successResponse(response(mapping, submit));
     } catch (err: any) {
       logger.error("[BracketTournaments] submit_result failed: " + (err && err.message ? err.message : String(err)));
+      return RpcHelpers.errorResponse(err && err.message ? err.message : String(err));
+    }
+  }
+
+  function rpcList(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+    try {
+      var data = RpcHelpers.parseRpcPayload(payload);
+      var gameId = data.game_id || data.gameId || null;
+      var limit = Math.min(Math.max(Number(data.limit || 50), 1), 200);
+
+      // Storage list returns all keys in the collection; filter by game_id
+      // prefix when given. Storage keys are "game_id:slug".
+      var listResp: any = nk.storageList(null, Constants.BRACKET_TOURNAMENTS_COLLECTION, limit, undefined);
+      var items: TournamentMapping[] = [];
+      var objects = (listResp && listResp.objects) || [];
+      for (var i = 0; i < objects.length; i++) {
+        var obj = objects[i];
+        if (!obj || !obj.value) continue;
+        if (gameId && obj.key.indexOf(gameId + ":") !== 0) continue;
+        items.push(obj.value as TournamentMapping);
+      }
+      // Lightweight projection — list view doesn't need the full bracket
+      // snapshot for every row.
+      var summary = items.map(function (m) {
+        return {
+          game_id: m.game_id,
+          tournament_slug: m.tournament_slug,
+          flavor: m.flavor,
+          state: m.state,
+          created_at: m.created_at,
+          updated_at: m.updated_at,
+          team_count: Object.keys(m.teams || {}).length,
+          match_count: Object.keys(m.matches || {}).length,
+          result_count: Object.keys(m.results || {}).length,
+          dashboard_url: m.bracket && m.bracket.dashboard_url ? m.bracket.dashboard_url : ""
+        };
+      });
+      return RpcHelpers.successResponse({ tournaments: summary, count: summary.length });
+    } catch (err: any) {
+      logger.error("[BracketTournaments] list failed: " + (err && err.message ? err.message : String(err)));
+      return RpcHelpers.errorResponse(err && err.message ? err.message : String(err));
+    }
+  }
+
+  function rpcCancel(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+    try {
+      RpcHelpers.requireAdmin(ctx, nk);
+      var data = RpcHelpers.parseRpcPayload(payload);
+      var mapping = requireMapping(nk, data);
+      if (mapping.state === "completed" || mapping.state === "archived") {
+        throw new Error("cannot cancel a tournament in state " + mapping.state);
+      }
+      // Best-effort delete in Bracket; the Nakama mapping is always archived.
+      if (data.delete_bracket === true || data.deleteBracket === true) {
+        var cfg = config(ctx);
+        var token = bracketLogin(nk, cfg);
+        safeDelete(nk, cfg, token, "/tournaments/" + mapping.bracket.tournament_id);
+      }
+      mapping.state = "archived";
+      mapping.last_error = data.reason ? String(data.reason).slice(0, 240) : undefined;
+      writeMapping(nk, mapping);
+      return RpcHelpers.successResponse(response(mapping));
+    } catch (err: any) {
+      logger.error("[BracketTournaments] cancel failed: " + (err && err.message ? err.message : String(err)));
       return RpcHelpers.errorResponse(err && err.message ? err.message : String(err));
     }
   }
@@ -640,6 +785,8 @@ namespace BracketTournaments {
     initializer.registerRpc("bracket_tournament_start", rpcStart);
     initializer.registerRpc("bracket_tournament_submit_result", rpcSubmitResult);
     initializer.registerRpc("bracket_tournament_status", rpcStatus);
-    logger.info("[BracketTournaments] RPCs registered");
+    initializer.registerRpc("bracket_tournament_list", rpcList);
+    initializer.registerRpc("bracket_tournament_cancel", rpcCancel);
+    logger.info("[BracketTournaments] RPCs registered (7)");
   }
 }
