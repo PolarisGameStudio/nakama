@@ -1003,6 +1003,38 @@ declare namespace LegacyWallet {
     function rpcUpdateGameRewardConfig(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
     function register(initializer: nkruntime.Initializer): void;
 }
+/**
+ * library-countdown.ts — Top Learners Library exam-countdown subscriptions.
+ *
+ * Spec lives in the Quizverse-web-frontend repo at QUIZVERSE_LIBRARY_10X_PLAN.md §4.7.
+ * Mirrors the runtime contract in `web/lib/library/exam-countdown.ts`.
+ *
+ * NOTE on file format:
+ *   The repo policy (see .gitignore L745-L746) explicitly blocks
+ *   `data/modules/*.lua` files from being committed — the TS source at
+ *   `data/modules/src/**` is the only source of truth, and the runtime
+ *   loads `data/modules/build/index.js` produced by the TS build.
+ *   This file is the canonical home for the 4 RPCs. A reference Lua
+ *   transliteration exists at `data/modules/library_countdown.lua` for
+ *   ops scripts but is intentionally gitignored.
+ *
+ * RPCs registered:
+ *   library.countdown.subscribe     — { exam_id, exam_date, custom?, channels?[], milestones?[] }
+ *   library.countdown.unsubscribe   — { exam_id, exam_date }
+ *   library.countdown.list_mine     — returns caller's subscriptions with days_remaining
+ *   library.countdown.emit_due      — system-only sweep; emits notifications for
+ *                                     milestones whose offset matches today's days-to-exam.
+ *
+ * Storage: collection "library_countdown_subs", key "<exam_id>:<exam_date>".
+ * Owner-read + system-read (perm 2), owner-only write (perm 1).
+ *
+ * Wiring: add `LibraryCountdownPlugin.register(initializer, nk, logger)` to
+ * `src/main.ts` next to QuizVersePlugin.register(...). Not done in this commit
+ * to keep the bundle rebuild atomic with the rest of the Library mount.
+ */
+declare namespace LibraryCountdownPlugin {
+    function register(initializer: nkruntime.Initializer, _nk: nkruntime.Nakama, logger: nkruntime.Logger): void;
+}
 declare namespace MpKernelAgent {
     var Op: {
         AGENT_JOINED: number;
@@ -3480,6 +3512,18 @@ declare namespace Hiro {
         operator: "best" | "set" | "incr" | "decr";
         sortOrder: "asc" | "desc";
         tiers: EventLeaderboardTier[];
+        /**
+         * Per-event override of the server-side score ceiling. Submissions over
+         * this value are rejected. Defaults to 10,000,000 when unset. Set per
+         * event when legitimate scores can exceed the default (e.g. cumulative
+         * weekly events).
+         */
+        maxScore?: number;
+        /**
+         * When true, allows reward claim before the event window ends. Defaults
+         * to false — claim is gated until now > endAt so rankings are final.
+         */
+        allowClaimDuringEvent?: boolean;
     }
     interface EventLeaderboardTier {
         name: string;

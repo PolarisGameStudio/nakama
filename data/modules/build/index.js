@@ -103,19 +103,46 @@ var BracketTournaments;
             return {};
         return JSON.parse(body);
     }
+    // Soft-cap timeouts so a slow Bracket can't hang a client RPC for 15s × N
+    // sub-calls. status() does up to 7 sub-calls — at 8s each that caps at 56s
+    // worst case, which is still gated by Nakama's RPC timeout. Worth tuning
+    // per-call if needed (write methods may legitimately need more).
+    var BRACKET_REQUEST_TIMEOUT_MS = 8000;
     function bracketRequest(nk, cfg, method, path, body, token) {
         var headers = {
             "Content-Type": "application/json",
             "Authorization": "Bearer " + token
         };
         var payload = body === null || body === undefined ? "" : JSON.stringify(body);
-        var resp = nk.httpRequest(cfg.baseUrl + path, method, headers, payload, 15000);
+        var resp = nk.httpRequest(cfg.baseUrl + path, method, headers, payload, BRACKET_REQUEST_TIMEOUT_MS);
+        // 401 = token expired or revoked mid-session. Refresh once and retry.
+        if (resp.code === 401) {
+            invalidateBracketToken(cfg);
+            var freshToken = bracketLogin(nk, cfg);
+            headers["Authorization"] = "Bearer " + freshToken;
+            resp = nk.httpRequest(cfg.baseUrl + path, method, headers, payload, BRACKET_REQUEST_TIMEOUT_MS);
+        }
         if (resp.code < 200 || resp.code >= 300) {
             throw new Error("Bracket " + method.toUpperCase() + " " + path + " failed: HTTP " + resp.code + " " + resp.body);
         }
         return parseJson(resp.body);
     }
+    // ── Token cache ──────────────────────────────────────────────────────
+    // Bracket access tokens are JWTs that survive minutes-to-hours; logging in
+    // on every RPC saturates the auth endpoint AND ships username/password over
+    // the wire N times per minute. We cache by baseUrl+email; cache lives in
+    // module scope (per goja instance, fine for our deployment topology).
+    var __bracketTokenCache = {};
+    var BRACKET_TOKEN_TTL_MS = 10 * 60 * 1000; // 10 minutes
+    function bracketTokenCacheKey(cfg) {
+        return cfg.baseUrl + "|" + cfg.email;
+    }
     function bracketLogin(nk, cfg) {
+        var key = bracketTokenCacheKey(cfg);
+        var cached = __bracketTokenCache[key];
+        if (cached && (Date.now() - cached.fetchedAt) < BRACKET_TOKEN_TTL_MS) {
+            return cached.token;
+        }
         var body = "username=" + encodeURIComponent(cfg.email) + "&password=" + encodeURIComponent(cfg.password);
         var resp = nk.httpRequest(cfg.baseUrl + "/token", "post", { "Content-Type": "application/x-www-form-urlencoded" }, body, 10000);
         if (resp.code < 200 || resp.code >= 300) {
@@ -124,7 +151,11 @@ var BracketTournaments;
         var parsed = parseJson(resp.body);
         if (!parsed.access_token)
             throw new Error("Bracket login response did not include access_token");
+        __bracketTokenCache[key] = { token: parsed.access_token, fetchedAt: Date.now() };
         return parsed.access_token;
+    }
+    function invalidateBracketToken(cfg) {
+        delete __bracketTokenCache[bracketTokenCacheKey(cfg)];
     }
     function dashboardUrl(cfg, slug) {
         if (!cfg.dashboardBaseUrl)
@@ -244,15 +275,26 @@ var BracketTournaments;
             pending_count: pending.length
         };
     }
+    function softGet(nk, cfg, token, path, fallback) {
+        // Used for endpoints that can legitimately 404/500 on a fresh tournament
+        // (rankings before any match played, next_stage_rankings on single-stage).
+        // The primary tournament/stages/players/teams calls MUST succeed.
+        try {
+            return extractData(bracketRequest(nk, cfg, "get", path, null, token));
+        }
+        catch (e) {
+            return fallback;
+        }
+    }
     function refreshBracketSnapshot(nk, cfg, token, mapping) {
         var tournament = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id, null, token));
         var playersResp = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/players?limit=100", null, token));
         var teamsResp = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/teams?limit=100", null, token));
         var stagesResp = bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/stages", null, token);
         var stages = extractData(stagesResp) || [];
-        var courts = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/courts", null, token)) || [];
-        var rankings = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/rankings", null, token)) || [];
-        var nextStageRankings = extractData(bracketRequest(nk, cfg, "get", "/tournaments/" + mapping.bracket.tournament_id + "/next_stage_rankings", null, token)) || {};
+        var courts = softGet(nk, cfg, token, "/tournaments/" + mapping.bracket.tournament_id + "/courts", []) || [];
+        var rankings = softGet(nk, cfg, token, "/tournaments/" + mapping.bracket.tournament_id + "/rankings", []) || [];
+        var nextStageRankings = softGet(nk, cfg, token, "/tournaments/" + mapping.bracket.tournament_id + "/next_stage_rankings", {}) || {};
         var allMatches = flattenMatches(stages);
         var stageItem = findStageItem(stages, mapping.bracket.stage_item_id);
         var players = playersResp && playersResp.players ? playersResp.players : [];
@@ -310,11 +352,21 @@ var BracketTournaments;
     function playerExternalId(player, teamExternalIdValue, index) {
         return String(player.external_id || player.externalId || player.user_id || player.userId || (teamExternalIdValue + ":player_" + (index + 1)));
     }
+    function safeDelete(nk, cfg, token, path) {
+        try {
+            bracketRequest(nk, cfg, "delete", path, null, token);
+        }
+        catch (e) {
+            // best-effort cleanup; intentionally swallow
+        }
+    }
     function createBracketTournament(nk, cfg, token, data, gameId, flavor, slug) {
         var startTime = data.starts_at || data.startsAt || new Date().toISOString();
         var teamCount = Number(data.team_count || data.teamCount || (data.teams ? data.teams.length : 0));
         if (!teamCount || teamCount < 2)
             throw new Error("team_count or at least two teams are required");
+        if (teamCount > 256)
+            throw new Error("team_count must be <= 256 (Bracket service hard cap)");
         var tournament = extractData(bracketRequest(nk, cfg, "post", "/tournaments", {
             club_id: cfg.clubId,
             name: data.name || slug,
@@ -326,14 +378,24 @@ var BracketTournaments;
             duration_minutes: Number(data.duration_minutes || data.durationMinutes || 15),
             margin_minutes: Number(data.margin_minutes || data.marginMinutes || 5)
         }, token));
-        var stage = extractData(bracketRequest(nk, cfg, "post", "/tournaments/" + tournament.id + "/stages", {}, token));
-        var stageItem = extractData(bracketRequest(nk, cfg, "post", "/tournaments/" + tournament.id + "/stage_items", {
-            stage_id: stage.id,
-            name: data.stage_item_name || data.stageItemName || data.name || null,
-            type: flavor,
-            team_count: teamCount,
-            ranking_id: data.ranking_id || data.rankingId || null
-        }, token));
+        // From here on, anything that throws must roll back the orphan tournament
+        // in Bracket so a retry doesn't leak rows.
+        var stage;
+        var stageItem;
+        try {
+            stage = extractData(bracketRequest(nk, cfg, "post", "/tournaments/" + tournament.id + "/stages", {}, token));
+            stageItem = extractData(bracketRequest(nk, cfg, "post", "/tournaments/" + tournament.id + "/stage_items", {
+                stage_id: stage.id,
+                name: data.stage_item_name || data.stageItemName || data.name || null,
+                type: flavor,
+                team_count: teamCount,
+                ranking_id: data.ranking_id || data.rankingId || null
+            }, token));
+        }
+        catch (e) {
+            safeDelete(nk, cfg, token, "/tournaments/" + tournament.id);
+            throw e;
+        }
         var created = nowIso();
         var mapping = {
             game_id: gameId,
@@ -426,7 +488,7 @@ var BracketTournaments;
             source: data.source_match_id || data.sourceMatchId || data.nakama_match_id || data.nakamaMatchId || null
         });
     }
-    function submitMatchResult(nk, cfg, token, mapping, data) {
+    function submitMatchResult(ctx, nk, cfg, token, mapping, data) {
         refreshBracketSnapshot(nk, cfg, token, mapping);
         var matchId = Number(data.bracket_match_id || data.bracketMatchId || data.match_id || data.matchId);
         if (!matchId)
@@ -439,8 +501,25 @@ var BracketTournaments;
         if (existing && existing.result_hash === hash) {
             return { duplicate: true, match_id: matchId };
         }
-        if (existing && existing.result_hash !== hash && data.force !== true) {
-            throw new Error("result already submitted with a different score; pass force=true to overwrite");
+        if (existing && existing.result_hash !== hash) {
+            if (data.force !== true) {
+                throw new Error("result already submitted with a different score; pass force=true (admin only) to overwrite");
+            }
+            // force=true is a destructive overwrite — gate to admin or the original
+            // creator. Without this, any player could rewrite any other player's
+            // result.
+            var callerId = ctx.userId || "";
+            var isAdmin = false;
+            try {
+                RpcHelpers.requireAdmin(ctx, nk);
+                isAdmin = true;
+            }
+            catch (e) {
+                isAdmin = false;
+            }
+            if (!isAdmin && callerId !== mapping.created_by) {
+                throw new Error("force=true overwrite requires admin context or matching created_by");
+            }
         }
         var score1 = Number(data.stage_item_input1_score || data.score1 || data.team1_score || data.team1Score || 0);
         var score2 = Number(data.stage_item_input2_score || data.score2 || data.team2_score || data.team2Score || 0);
@@ -551,12 +630,77 @@ var BracketTournaments;
             var mapping = requireMapping(nk, data);
             var cfg = config(ctx);
             var token = bracketLogin(nk, cfg);
-            var submit = submitMatchResult(nk, cfg, token, mapping, data);
+            var submit = submitMatchResult(ctx, nk, cfg, token, mapping, data);
             writeMapping(nk, mapping);
             return RpcHelpers.successResponse(response(mapping, submit));
         }
         catch (err) {
             logger.error("[BracketTournaments] submit_result failed: " + (err && err.message ? err.message : String(err)));
+            return RpcHelpers.errorResponse(err && err.message ? err.message : String(err));
+        }
+    }
+    function rpcList(ctx, logger, nk, payload) {
+        try {
+            var data = RpcHelpers.parseRpcPayload(payload);
+            var gameId = data.game_id || data.gameId || null;
+            var limit = Math.min(Math.max(Number(data.limit || 50), 1), 200);
+            // Storage list returns all keys in the collection; filter by game_id
+            // prefix when given. Storage keys are "game_id:slug".
+            var listResp = nk.storageList(null, Constants.BRACKET_TOURNAMENTS_COLLECTION, limit, undefined);
+            var items = [];
+            var objects = (listResp && listResp.objects) || [];
+            for (var i = 0; i < objects.length; i++) {
+                var obj = objects[i];
+                if (!obj || !obj.value)
+                    continue;
+                if (gameId && obj.key.indexOf(gameId + ":") !== 0)
+                    continue;
+                items.push(obj.value);
+            }
+            // Lightweight projection — list view doesn't need the full bracket
+            // snapshot for every row.
+            var summary = items.map(function (m) {
+                return {
+                    game_id: m.game_id,
+                    tournament_slug: m.tournament_slug,
+                    flavor: m.flavor,
+                    state: m.state,
+                    created_at: m.created_at,
+                    updated_at: m.updated_at,
+                    team_count: Object.keys(m.teams || {}).length,
+                    match_count: Object.keys(m.matches || {}).length,
+                    result_count: Object.keys(m.results || {}).length,
+                    dashboard_url: m.bracket && m.bracket.dashboard_url ? m.bracket.dashboard_url : ""
+                };
+            });
+            return RpcHelpers.successResponse({ tournaments: summary, count: summary.length });
+        }
+        catch (err) {
+            logger.error("[BracketTournaments] list failed: " + (err && err.message ? err.message : String(err)));
+            return RpcHelpers.errorResponse(err && err.message ? err.message : String(err));
+        }
+    }
+    function rpcCancel(ctx, logger, nk, payload) {
+        try {
+            RpcHelpers.requireAdmin(ctx, nk);
+            var data = RpcHelpers.parseRpcPayload(payload);
+            var mapping = requireMapping(nk, data);
+            if (mapping.state === "completed" || mapping.state === "archived") {
+                throw new Error("cannot cancel a tournament in state " + mapping.state);
+            }
+            // Best-effort delete in Bracket; the Nakama mapping is always archived.
+            if (data.delete_bracket === true || data.deleteBracket === true) {
+                var cfg = config(ctx);
+                var token = bracketLogin(nk, cfg);
+                safeDelete(nk, cfg, token, "/tournaments/" + mapping.bracket.tournament_id);
+            }
+            mapping.state = "archived";
+            mapping.last_error = data.reason ? String(data.reason).slice(0, 240) : undefined;
+            writeMapping(nk, mapping);
+            return RpcHelpers.successResponse(response(mapping));
+        }
+        catch (err) {
+            logger.error("[BracketTournaments] cancel failed: " + (err && err.message ? err.message : String(err)));
             return RpcHelpers.errorResponse(err && err.message ? err.message : String(err));
         }
     }
@@ -595,7 +739,9 @@ var BracketTournaments;
         initializer.registerRpc("bracket_tournament_start", rpcStart);
         initializer.registerRpc("bracket_tournament_submit_result", rpcSubmitResult);
         initializer.registerRpc("bracket_tournament_status", rpcStatus);
-        logger.info("[BracketTournaments] RPCs registered");
+        initializer.registerRpc("bracket_tournament_list", rpcList);
+        initializer.registerRpc("bracket_tournament_cancel", rpcCancel);
+        logger.info("[BracketTournaments] RPCs registered (7)");
     }
     BracketTournaments.register = register;
 })(BracketTournaments || (BracketTournaments = {}));
@@ -10178,11 +10324,32 @@ var HiroEventLeaderboards;
         }
         return RpcHelpers.successResponse({ events: result });
     }
+    // Server-side ceiling. Per-event ceilings can override via def.maxScore.
+    // Without a cap, score=Number.MAX_SAFE_INTEGER trivially wins.
+    var DEFAULT_MAX_SCORE = 10000000;
+    // Bound eventId character set + length to keep storage keys deterministic
+    // and avoid path-injection style abuse via the eventId field.
+    var EVENT_ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+    function validateScore(score, def) {
+        if (typeof score !== "number")
+            return { ok: false, reason: "score must be a number", value: 0 };
+        if (!isFinite(score))
+            return { ok: false, reason: "score must be finite", value: 0 };
+        if (score < 0)
+            return { ok: false, reason: "score must be >= 0", value: 0 };
+        var max = (def && typeof def.maxScore === "number" && def.maxScore > 0) ? def.maxScore : DEFAULT_MAX_SCORE;
+        if (score > max)
+            return { ok: false, reason: "score exceeds maximum (" + max + ")", value: 0 };
+        // Truncate to integer for leaderboard storage semantics.
+        return { ok: true, reason: "", value: Math.floor(score) };
+    }
     function rpcSubmit(ctx, logger, nk, payload) {
         var userId = RpcHelpers.requireUserId(ctx);
         var data = RpcHelpers.parseRpcPayload(payload);
         if (!data.eventId || data.score === undefined)
             return RpcHelpers.errorResponse("eventId and score required");
+        if (!EVENT_ID_RE.test(String(data.eventId)))
+            return RpcHelpers.errorResponse("eventId must match [A-Za-z0-9._:-]{1,64}");
         var gameId = RpcHelpers.gameId(data);
         var config = getConfig(nk, gameId);
         var def = config.events[data.eventId];
@@ -10195,6 +10362,12 @@ var HiroEventLeaderboards;
         var now = Math.floor(Date.now() / 1000);
         if (now < ae.startAt || now > ae.endAt)
             return RpcHelpers.errorResponse("Event not in active window");
+        var v = validateScore(data.score, def);
+        if (!v.ok)
+            return RpcHelpers.errorResponse(v.reason);
+        var subscore = data.subscore !== undefined ? validateScore(data.subscore, def) : { ok: true, reason: "", value: 0 };
+        if (!subscore.ok)
+            return RpcHelpers.errorResponse("subscore: " + subscore.reason);
         var userState = getUserEventState(nk, userId, gameId);
         if (!userState.events[data.eventId]) {
             userState.events[data.eventId] = { joined: true, cohortId: ae.cohortId || "default" };
@@ -10203,61 +10376,111 @@ var HiroEventLeaderboards;
         saveUserEventState(nk, userId, userState, gameId);
         var operatorMap = { best: "best" /* nkruntime.OverrideOperator.BEST */, set: "set" /* nkruntime.OverrideOperator.SET */, incr: "increment" /* nkruntime.OverrideOperator.INCREMENTAL */, decr: "decrement" /* nkruntime.OverrideOperator.DECREMENTAL */ };
         var op = operatorMap[def.operator] || "best" /* nkruntime.OverrideOperator.BEST */;
-        nk.leaderboardRecordWrite(ae.leaderboardId, userId, ctx.username || "", data.score, data.subscore || 0, data.metadata || {}, op);
+        nk.leaderboardRecordWrite(ae.leaderboardId, userId, ctx.username || "", v.value, subscore.value, data.metadata || {}, op);
         EventBus.emit(nk, logger, ctx, EventBus.Events.SCORE_SUBMITTED, {
-            userId: userId, eventId: data.eventId, score: data.score
+            userId: userId, eventId: data.eventId, score: v.value
         });
-        return RpcHelpers.successResponse({ success: true });
+        // Return the new rank so clients don't need a follow-up RPC for the
+        // single most common post-submit UX (toast: "you're now #N").
+        var newRank = 0;
+        var newScore = v.value;
+        try {
+            var owner = nk.leaderboardRecordsList(ae.leaderboardId, [userId], 1, undefined, 0);
+            if (owner.records && owner.records.length > 0) {
+                newRank = owner.records[0].rank;
+                newScore = owner.records[0].score;
+            }
+        }
+        catch (e) {
+            // Non-fatal — submit already succeeded.
+        }
+        return RpcHelpers.successResponse({ success: true, rank: newRank, score: newScore });
     }
     function rpcClaim(ctx, logger, nk, payload) {
         var userId = RpcHelpers.requireUserId(ctx);
         var data = RpcHelpers.parseRpcPayload(payload);
         if (!data.eventId)
             return RpcHelpers.errorResponse("eventId required");
+        if (!EVENT_ID_RE.test(String(data.eventId)))
+            return RpcHelpers.errorResponse("eventId must match [A-Za-z0-9._:-]{1,64}");
         var gameId = RpcHelpers.gameId(data);
         var config = getConfig(nk, gameId);
         var def = config.events[data.eventId];
         if (!def)
             return RpcHelpers.errorResponse("Unknown event");
+        var activeEvents = getActiveEvents(nk);
+        var ae = activeEvents.find(function (e) { return e.eventId === data.eventId; });
+        if (!ae)
+            return RpcHelpers.errorResponse("Event not found");
+        // Claim only after the event window has ended. Otherwise rankings can
+        // still shift and we'd be paying out a non-final ranking. Allow a grace
+        // period override via def.allowClaimDuringEvent (off by default).
+        var now = Math.floor(Date.now() / 1000);
+        var allowDuringEvent = !!def.allowClaimDuringEvent;
+        if (!allowDuringEvent && now <= ae.endAt) {
+            return RpcHelpers.errorResponse("Event still active — claim unlocks after endAt");
+        }
+        // Persist claimedAt FIRST as an optimistic-lock; if another concurrent
+        // claim wins the race, we'd already have claimedAt and skip the reward
+        // grant. (Single-RPC instances of goja in our cluster make this safe;
+        // the second concurrent caller observes claimedAt set and bails out.)
         var userState = getUserEventState(nk, userId, gameId);
         var us = userState.events[data.eventId];
         if (!us || !us.joined)
             return RpcHelpers.errorResponse("Not joined");
         if (us.claimedAt)
             return RpcHelpers.errorResponse("Already claimed");
-        var activeEvents = getActiveEvents(nk);
-        var ae = activeEvents.find(function (e) { return e.eventId === data.eventId; });
-        if (!ae)
-            return RpcHelpers.errorResponse("Event not found");
         var records = nk.leaderboardRecordsList(ae.leaderboardId, [userId], 1, undefined, 0);
         var rank = 0;
         if (records.records && records.records.length > 0) {
             rank = records.records[0].rank;
         }
+        if (rank <= 0) {
+            return RpcHelpers.errorResponse("Not ranked — submit a score before claiming");
+        }
+        // Reserve the claim BEFORE granting so a crash mid-grant doesn't allow a
+        // double-claim on retry. The reward grant is idempotent at the wallet
+        // layer, but the user-state lock is the primary safety.
+        us.claimedAt = now;
+        saveUserEventState(nk, userId, userState, gameId);
         var reward = null;
-        for (var i = 0; i < def.tiers.length; i++) {
-            var tier = def.tiers[i];
-            if (rank >= tier.rankMin && rank <= tier.rankMax) {
-                reward = RewardEngine.resolveReward(nk, tier.reward);
-                RewardEngine.grantReward(nk, logger, ctx, userId, gameId || "default", reward);
-                break;
+        var matchedTier = null;
+        try {
+            for (var i = 0; i < def.tiers.length; i++) {
+                var tier = def.tiers[i];
+                if (rank >= tier.rankMin && rank <= tier.rankMax) {
+                    reward = RewardEngine.resolveReward(nk, tier.reward);
+                    RewardEngine.grantReward(nk, logger, ctx, userId, gameId || "default", reward);
+                    matchedTier = { rankMin: tier.rankMin, rankMax: tier.rankMax };
+                    break;
+                }
             }
         }
-        us.claimedAt = Math.floor(Date.now() / 1000);
-        saveUserEventState(nk, userId, userState, gameId);
-        return RpcHelpers.successResponse({ rank: rank, reward: reward });
+        catch (e) {
+            // Roll back the claim lock so the user can retry — we don't want to
+            // permanently lock them out of a reward they earned because the grant
+            // pipeline failed.
+            us.claimedAt = undefined;
+            saveUserEventState(nk, userId, userState, gameId);
+            throw e;
+        }
+        return RpcHelpers.successResponse({ rank: rank, reward: reward, tier: matchedTier });
     }
     function rpcGetRankings(ctx, logger, nk, payload) {
         var data = RpcHelpers.parseRpcPayload(payload);
         if (!data.eventId)
             return RpcHelpers.errorResponse("eventId required");
+        if (!EVENT_ID_RE.test(String(data.eventId)))
+            return RpcHelpers.errorResponse("eventId must match [A-Za-z0-9._:-]{1,64}");
         var activeEvents = getActiveEvents(nk);
         var ae = activeEvents.find(function (e) { return e.eventId === data.eventId; });
         if (!ae)
             return RpcHelpers.errorResponse("Event not found or not active");
         var config = getConfig(nk, RpcHelpers.gameId(data));
         var def = config.events[ae.eventId];
-        var limit = data.limit || 50;
+        // Bound the page size — unbounded limit would let a client dump the full
+        // leaderboard in a single call (5K+ records on a popular event).
+        var limit = Math.min(Math.max(Number(data.limit || 50), 1), 200);
         var cursor = data.cursor || undefined;
         var result = nk.leaderboardRecordsList(ae.leaderboardId, [], limit, cursor, 0);
         var rankings = [];
@@ -16152,6 +16375,225 @@ var LegacyWallet;
     }
     LegacyWallet.register = register;
 })(LegacyWallet || (LegacyWallet = {}));
+/**
+ * library-countdown.ts — Top Learners Library exam-countdown subscriptions.
+ *
+ * Spec lives in the Quizverse-web-frontend repo at QUIZVERSE_LIBRARY_10X_PLAN.md §4.7.
+ * Mirrors the runtime contract in `web/lib/library/exam-countdown.ts`.
+ *
+ * NOTE on file format:
+ *   The repo policy (see .gitignore L745-L746) explicitly blocks
+ *   `data/modules/*.lua` files from being committed — the TS source at
+ *   `data/modules/src/**` is the only source of truth, and the runtime
+ *   loads `data/modules/build/index.js` produced by the TS build.
+ *   This file is the canonical home for the 4 RPCs. A reference Lua
+ *   transliteration exists at `data/modules/library_countdown.lua` for
+ *   ops scripts but is intentionally gitignored.
+ *
+ * RPCs registered:
+ *   library.countdown.subscribe     — { exam_id, exam_date, custom?, channels?[], milestones?[] }
+ *   library.countdown.unsubscribe   — { exam_id, exam_date }
+ *   library.countdown.list_mine     — returns caller's subscriptions with days_remaining
+ *   library.countdown.emit_due      — system-only sweep; emits notifications for
+ *                                     milestones whose offset matches today's days-to-exam.
+ *
+ * Storage: collection "library_countdown_subs", key "<exam_id>:<exam_date>".
+ * Owner-read + system-read (perm 2), owner-only write (perm 1).
+ *
+ * Wiring: add `LibraryCountdownPlugin.register(initializer, nk, logger)` to
+ * `src/main.ts` next to QuizVersePlugin.register(...). Not done in this commit
+ * to keep the bundle rebuild atomic with the rest of the Library mount.
+ */
+var LibraryCountdownPlugin;
+(function (LibraryCountdownPlugin) {
+    // ---------------------------------------------------------------------------
+    // Constants — mirror web/lib/library/exam-countdown.ts
+    // ---------------------------------------------------------------------------
+    var COLLECTION = "library_countdown_subs";
+    var SYSTEM_USER_ID = "00000000-0000-0000-0000-000000000000";
+    var SECONDS_PER_DAY = 86400;
+    var MILESTONES = [
+        { id: "d-90", offset: 90 },
+        { id: "d-60", offset: 60 },
+        { id: "d-30", offset: 30 },
+        { id: "d-14", offset: 14 },
+        { id: "d-7", offset: 7 },
+        { id: "d-3", offset: 3 },
+        { id: "d-1", offset: 1 },
+        { id: "d0", offset: 0 },
+        { id: "d+1", offset: -1 },
+        { id: "d+7", offset: -7 },
+        { id: "d+30", offset: -30 },
+    ];
+    var DEFAULT_CHANNELS = ["push", "inapp", "email"];
+    var DEFAULT_MILESTONES = ["d-30", "d-7", "d-1", "d0"];
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+    function nakamaError(msg, code) {
+        return { message: msg, code: code };
+    }
+    function parseIsoDate(iso) {
+        if (typeof iso !== "string" || iso.length < 10)
+            return null;
+        // Expect "YYYY-MM-DD"; rest is ignored.
+        var year = parseInt(iso.substr(0, 4), 10);
+        var month = parseInt(iso.substr(5, 2), 10);
+        var day = parseInt(iso.substr(8, 2), 10);
+        if (!year || !month || !day)
+            return null;
+        // Date.UTC returns ms; convert to seconds-since-epoch like Lua's os.time().
+        return Math.floor(Date.UTC(year, month - 1, day) / 1000);
+    }
+    function subKey(examId, examDate) {
+        return examId + ":" + examDate;
+    }
+    function parseJson(payload) {
+        try {
+            return JSON.parse(payload || "{}");
+        }
+        catch (_e) {
+            return null;
+        }
+    }
+    // ---------------------------------------------------------------------------
+    // RPC: library.countdown.subscribe
+    // ---------------------------------------------------------------------------
+    var rpcSubscribe = function (ctx, logger, nk, payload) {
+        if (!ctx.userId)
+            throw nakamaError("unauthenticated", 16 /* nkruntime.Codes.UNAUTHENTICATED */);
+        var data = parseJson(payload);
+        if (!data || !data.exam_id || !data.exam_date) {
+            throw nakamaError("exam_id and exam_date are required", 3 /* nkruntime.Codes.INVALID_ARGUMENT */);
+        }
+        if (parseIsoDate(String(data.exam_date)) === null) {
+            throw nakamaError("exam_date must be ISO YYYY-MM-DD", 3 /* nkruntime.Codes.INVALID_ARGUMENT */);
+        }
+        var record = {
+            exam_id: String(data.exam_id),
+            exam_date: String(data.exam_date),
+            custom: data.custom === true,
+            channels: (data.channels && data.channels.length) ? data.channels : DEFAULT_CHANNELS,
+            milestones: (data.milestones && data.milestones.length) ? data.milestones : DEFAULT_MILESTONES,
+            created_at: Math.floor(Date.now() / 1000),
+            last_emitted: {},
+        };
+        nk.storageWrite([{
+                collection: COLLECTION,
+                key: subKey(record.exam_id, record.exam_date),
+                userId: ctx.userId,
+                value: record,
+                permissionRead: 2,
+                permissionWrite: 1,
+            }]);
+        return JSON.stringify({ success: true, subscription: record });
+    };
+    // ---------------------------------------------------------------------------
+    // RPC: library.countdown.unsubscribe
+    // ---------------------------------------------------------------------------
+    var rpcUnsubscribe = function (ctx, logger, nk, payload) {
+        if (!ctx.userId)
+            throw nakamaError("unauthenticated", 16 /* nkruntime.Codes.UNAUTHENTICATED */);
+        var data = parseJson(payload);
+        if (!data || !data.exam_id || !data.exam_date) {
+            throw nakamaError("exam_id and exam_date are required", 3 /* nkruntime.Codes.INVALID_ARGUMENT */);
+        }
+        nk.storageDelete([{
+                collection: COLLECTION,
+                key: subKey(String(data.exam_id), String(data.exam_date)),
+                userId: ctx.userId,
+            }]);
+        return JSON.stringify({ success: true });
+    };
+    // ---------------------------------------------------------------------------
+    // RPC: library.countdown.list_mine
+    // ---------------------------------------------------------------------------
+    var rpcListMine = function (ctx, logger, nk, _payload) {
+        if (!ctx.userId)
+            throw nakamaError("unauthenticated", 16 /* nkruntime.Codes.UNAUTHENTICATED */);
+        var page = nk.storageList(ctx.userId, COLLECTION, 100, "");
+        var now = Math.floor(Date.now() / 1000);
+        var out = [];
+        var records = page.objects || [];
+        for (var i = 0; i < records.length; i++) {
+            var v = records[i].value;
+            if (!v)
+                continue;
+            var examTs = parseIsoDate(v.exam_date);
+            var daysRemaining = (examTs !== null) ? Math.floor((examTs - now) / SECONDS_PER_DAY) : null;
+            out.push({
+                exam_id: v.exam_id,
+                exam_date: v.exam_date,
+                custom: v.custom === true,
+                channels: v.channels || DEFAULT_CHANNELS,
+                milestones: v.milestones || DEFAULT_MILESTONES,
+                days_remaining: daysRemaining,
+            });
+        }
+        return JSON.stringify({ success: true, subscriptions: out });
+    };
+    // ---------------------------------------------------------------------------
+    // RPC: library.countdown.emit_due — system-only sweep
+    // ---------------------------------------------------------------------------
+    var rpcEmitDue = function (ctx, logger, nk, _payload) {
+        if (ctx.userId && ctx.userId !== "" && ctx.userId !== SYSTEM_USER_ID) {
+            throw nakamaError("system-only", 7 /* nkruntime.Codes.PERMISSION_DENIED */);
+        }
+        var now = Math.floor(Date.now() / 1000);
+        var scanned = 0, emitted = 0;
+        var cursor = "";
+        do {
+            var page = nk.storageList(null, COLLECTION, 200, cursor);
+            cursor = page.cursor || "";
+            var records = page.objects || [];
+            for (var i = 0; i < records.length; i++) {
+                var r = records[i];
+                var v = r.value;
+                if (!v)
+                    continue;
+                scanned++;
+                var examTs = parseIsoDate(v.exam_date);
+                if (examTs === null)
+                    continue;
+                var daysTo = Math.floor((examTs - now) / SECONDS_PER_DAY);
+                var wantSet = {};
+                var wants = v.milestones || DEFAULT_MILESTONES;
+                for (var w = 0; w < wants.length; w++)
+                    wantSet[wants[w]] = true;
+                for (var m = 0; m < MILESTONES.length; m++) {
+                    var ms = MILESTONES[m];
+                    var lastEmitted = v.last_emitted || {};
+                    if (wantSet[ms.id] && daysTo === ms.offset && !lastEmitted[ms.id]) {
+                        nk.notificationSend(r.userId, "Exam countdown — " + v.exam_id, { milestone: ms.id, exam_id: v.exam_id, exam_date: v.exam_date, days_to: daysTo }, 1001, "", false);
+                        v.last_emitted = lastEmitted;
+                        v.last_emitted[ms.id] = now;
+                        nk.storageWrite([{
+                                collection: COLLECTION,
+                                key: r.key,
+                                userId: r.userId,
+                                value: v,
+                                version: r.version,
+                            }]);
+                        emitted++;
+                    }
+                }
+            }
+        } while (cursor !== "");
+        logger.info("[library_countdown] emit_due scanned=" + scanned + " emitted=" + emitted);
+        return JSON.stringify({ success: true, scanned: scanned, emitted: emitted });
+    };
+    // ---------------------------------------------------------------------------
+    // register — call from src/main.ts after the multiplayer kernel mounts.
+    // ---------------------------------------------------------------------------
+    function register(initializer, _nk, logger) {
+        initializer.registerRpc("library.countdown.subscribe", rpcSubscribe);
+        initializer.registerRpc("library.countdown.unsubscribe", rpcUnsubscribe);
+        initializer.registerRpc("library.countdown.list_mine", rpcListMine);
+        initializer.registerRpc("library.countdown.emit_due", rpcEmitDue);
+        logger.info("[LibraryCountdown] 4 RPCs registered (subscribe/unsubscribe/list_mine/emit_due)");
+    }
+    LibraryCountdownPlugin.register = register;
+})(LibraryCountdownPlugin || (LibraryCountdownPlugin = {}));
 // IIVXAgent — first-class AI-agent kernel service.
 //
 // Wire contract: schemas/multiplayer/services/agent.proto. Agents appear
