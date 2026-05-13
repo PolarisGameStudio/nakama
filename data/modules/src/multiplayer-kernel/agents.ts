@@ -466,7 +466,7 @@ namespace MpKernelAgent {
 
   // ---- RPC handlers (admin / authenticated game-plugin use) ----
 
-  function rpcAgentSpawn(
+  export function rpcAgentSpawn(
     ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string
   ): string {
     if (!isPrivileged(ctx)) throw "not authorized";
@@ -481,7 +481,7 @@ namespace MpKernelAgent {
     return JSON.stringify(res);
   }
 
-  function rpcAgentDespawn(
+  export function rpcAgentDespawn(
     ctx: nkruntime.Context, _logger: nkruntime.Logger, _nk: nkruntime.Nakama, payload: string
   ): string {
     if (!isPrivileged(ctx)) throw "not authorized";
@@ -492,13 +492,13 @@ namespace MpKernelAgent {
     return JSON.stringify({ ok: true });
   }
 
-  function rpcListPersonas(
+  export function rpcListPersonas(
     _ctx: nkruntime.Context, _logger: nkruntime.Logger, _nk: nkruntime.Nakama, _payload: string
   ): string {
     return JSON.stringify({ personas: listPersonas() });
   }
 
-  function rpcAgentSpeak(
+  export function rpcAgentSpeak(
     ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string
   ): string {
     if (!isPrivileged(ctx)) throw "not authorized";
@@ -520,4 +520,20 @@ namespace MpKernelAgent {
     if (vars && vars["server_token"]) return true;
     return false;
   }
+}
+
+function mpAgentSpawnRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+  return MpKernelAgent.rpcAgentSpawn(ctx, logger, nk, payload);
+}
+
+function mpAgentDespawnRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+  return MpKernelAgent.rpcAgentDespawn(ctx, logger, nk, payload);
+}
+
+function mpAgentListPersonasRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+  return MpKernelAgent.rpcListPersonas(ctx, logger, nk, payload);
+}
+
+function mpAgentSpeakRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+  return MpKernelAgent.rpcAgentSpeak(ctx, logger, nk, payload);
 }

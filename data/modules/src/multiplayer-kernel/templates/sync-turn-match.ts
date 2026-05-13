@@ -28,7 +28,8 @@ namespace MpKernelSyncTurn {
   // Template-init defaults (game plugins override).
   export var DefaultInit = {
     min_players: 2,
-    max_players: 5,
+    // 0 = unlimited. Game plugins can still set a finite cap.
+    max_players: 0,
     default_input_window_ms: 15000,
     max_match_duration_ms: 30 * 60 * 1000, // 30 min hard cap.
     reconnect_grace_ms: 60000,
@@ -174,7 +175,7 @@ namespace MpKernelSyncTurn {
     onJoinAttempt: function (_ctx, _logger, _nk, _dispatcher, _tick, state, _presence, _metadata) {
       var ks = state as IState;
       var seatCount = countTotalSeats(ks);
-      if (seatCount >= ks.init.max_players) {
+      if (ks.init.max_players > 0 && seatCount >= ks.init.max_players) {
         return { state: ks, accept: false, rejectMessage: "match full" };
       }
       if (ks.phase === Phase.POST_GAME) {

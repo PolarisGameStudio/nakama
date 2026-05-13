@@ -89,7 +89,7 @@ namespace MpKernelAsyncTurn {
   function loadPersisted(nk: nkruntime.Nakama, gameId: string): any | null {
     if (!gameId) return null;
     try {
-      var rows = nk.storageRead([{ collection: COLLECTION, key: gameId, userId: "" }]);
+      var rows = nk.storageRead([{ collection: COLLECTION, key: gameId, userId: Constants.SYSTEM_USER_ID }]);
       if (rows && rows.length > 0 && rows[0].value) return rows[0].value;
     } catch (_e) { /* swallow */ }
     return null;
@@ -101,7 +101,7 @@ namespace MpKernelAsyncTurn {
       nk.storageWrite([{
         collection: COLLECTION,
         key: gameId,
-        userId: "",
+        userId: Constants.SYSTEM_USER_ID,
         value: blob,
         permissionRead: 2,    // public-read so opponents can rebuild offline
         permissionWrite: 0    // server-only writes

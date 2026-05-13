@@ -15,6 +15,7 @@ namespace MpKernelMatch {
   // state-resync. Templates that need a tighter / looser bound should
   // override SEQ_GAP_THRESHOLD on this namespace at registration time.
   export var SEQ_GAP_THRESHOLD = 32;
+  var registeredHandlers: { [templateId: string]: nkruntime.MatchHandler<IKernelState<any>> } = {};
 
   // State stored in Nakama match memory. Generic over template state TS.
   export interface IKernelState<TS> {
@@ -455,7 +456,7 @@ namespace MpKernelMatch {
   // Register a template with the Nakama runtime + the code registry.
   // Idempotent across module reload.
   export function registerTemplate<TS>(
-    initializer: nkruntime.Initializer,
+    _initializer: nkruntime.Initializer,
     template: MpKernel.IMatchTemplate<TS>,
     logger: nkruntime.Logger
   ): void {
@@ -466,8 +467,16 @@ namespace MpKernelMatch {
       to: template.opRange.to,
       template_id: template.templateId
     });
-    initializer.registerMatch(template.templateId, makeHandler(template));
-    logger.info("[MpKernel] registered match template '" + template.templateId +
+    registeredHandlers[template.templateId] = makeHandler(template) as nkruntime.MatchHandler<IKernelState<any>>;
+    logger.info("[MpKernel] prepared match template '" + template.templateId +
       "' opRange=0x" + template.opRange.from.toString(16) + "-0x" + template.opRange.to.toString(16));
+  }
+
+  export function handlerFor(templateId: string): nkruntime.MatchHandler<IKernelState<any>> {
+    var handler = registeredHandlers[templateId];
+    if (!handler) {
+      throw new Error("[MpKernel] match handler not prepared: " + templateId);
+    }
+    return handler;
   }
 }

@@ -1,50 +1,50 @@
 // Package main — AvatarReplicationMatch as a native Nakama Go runtime module.
 //
 // Why Go (not Goja JS):
-//   * Tick rate is 60–90 Hz with N avatars × 5 channels (head/hand/body/face/
+//   - Tick rate is 60–90 Hz with N avatars × 5 channels (head/hand/body/face/
 //     finger) × per-bone joint streams. The per-tick allocation cost in Goja
 //     dominates beyond ~30 Hz; running natively keeps the budget at 11–16 ms
 //     even for parties of 16.
-//   * Pose quantization (smallest-three quaternion + fixed-point mm position)
+//   - Pose quantization (smallest-three quaternion + fixed-point mm position)
 //     is integer-heavy work; Go encodes/decodes ~10× faster than Goja.
 //
 // Wire contract:
-//   * Reserved opcode range 0xF000–0xFFFF (matches schemas/multiplayer/
+//   - Reserved opcode range 0xF000–0xFFFF (matches schemas/multiplayer/
 //     opcodes.proto: OP_XR_HEAD_POSE…OP_XR_AVATAR_LOD).
-//   * Same envelope shape as JS templates: {h:{wire_version, op, seq,
+//   - Same envelope shape as JS templates: {h:{wire_version, op, seq,
 //     match_time_ms, sender_user_id, match_id, client_opcode_uuid}, p:{...}}.
-//   * For pose channels we use a compact JSON payload that mirrors the
+//   - For pose channels we use a compact JSON payload that mirrors the
 //     `PoseQuantized` proto. Future v2 can swap to binary protobuf without
 //     changing the kernel; clients negotiate via the wire_version field.
 //
 // Match handler responsibilities:
-//   1. Negotiate per-channel rates (head/hand/body/face/finger) at join time.
-//      Clients SHOULD NOT exceed; server enforces a per-second budget.
-//   2. Drive a single dispatcher tick at server tick_hz (default 30 Hz) which
-//      relays the most-recent buffered pose for each (user, channel) — this
-//      is the "delta + last-write-wins" optimization that keeps latency low
-//      regardless of how often the client pushes.
-//   3. Quantize on ingress only if client sent uncompressed; otherwise pass
-//      through (clients are expected to quantize once, on-device).
-//   4. Distributed object authority: each user is the authoritative author of
-//      their own avatar's poses. Server REJECTS pose updates whose
-//      `pose.user_id` differs from the sender — never trust the wire id.
-//   5. Interest management (AOI): if `enable_aoi`, server keeps a coarse
-//      bucket grid (default 8 m cells) keyed by head position. A user only
-//      receives pose updates from peers within `aoi_radius_mm`. The full
-//      service ships in P10 (multiplayer-kernel/spatial-hash); this module
-//      uses a simple in-match grid sized to a single room.
-//   6. LOD auto-demote: if a user-pair distance exceeds the AOI radius but
-//      they're still in the same coarse area (e.g. ring around a stage),
-//      send AvatarLOD demote messages instead of dropping entirely.
-//   7. Voice position broadcast: if the match has a LiveKit room attached
-//      (passed in template_init.voice_room_id), the server forwards the
-//      most-recent head pose to the voice provider's spatial publish API
-//      via OP_XR_VOICE_POSITION. The voice client uses this for HRTF.
-//   8. Per-channel rate-limit: if a client exceeds its declared budget,
-//      the server emits WARN_RATE_LIMITED and silently drops excess.
-//   9. Snapshot on join / on resume: latest pose for every user is sent as
-//      a bundled snapshot so late-joiners see populated avatars immediately.
+//  1. Negotiate per-channel rates (head/hand/body/face/finger) at join time.
+//     Clients SHOULD NOT exceed; server enforces a per-second budget.
+//  2. Drive a single dispatcher tick at server tick_hz (default 30 Hz) which
+//     relays the most-recent buffered pose for each (user, channel) — this
+//     is the "delta + last-write-wins" optimization that keeps latency low
+//     regardless of how often the client pushes.
+//  3. Quantize on ingress only if client sent uncompressed; otherwise pass
+//     through (clients are expected to quantize once, on-device).
+//  4. Distributed object authority: each user is the authoritative author of
+//     their own avatar's poses. Server REJECTS pose updates whose
+//     `pose.user_id` differs from the sender — never trust the wire id.
+//  5. Interest management (AOI): if `enable_aoi`, server keeps a coarse
+//     bucket grid (default 8 m cells) keyed by head position. A user only
+//     receives pose updates from peers within `aoi_radius_mm`. The full
+//     service ships in P10 (multiplayer-kernel/spatial-hash); this module
+//     uses a simple in-match grid sized to a single room.
+//  6. LOD auto-demote: if a user-pair distance exceeds the AOI radius but
+//     they're still in the same coarse area (e.g. ring around a stage),
+//     send AvatarLOD demote messages instead of dropping entirely.
+//  7. Voice position broadcast: if the match has a LiveKit room attached
+//     (passed in template_init.voice_room_id), the server forwards the
+//     most-recent head pose to the voice provider's spatial publish API
+//     via OP_XR_VOICE_POSITION. The voice client uses this for HRTF.
+//  8. Per-channel rate-limit: if a client exceeds its declared budget,
+//     the server emits WARN_RATE_LIMITED and silently drops excess.
+//  9. Snapshot on join / on resume: latest pose for every user is sent as
+//     a bundled snapshot so late-joiners see populated avatars immediately.
 //  10. End match on duration cap, quorum loss, or kernel signal.
 //
 // This module registers itself as a match handler under the template id
@@ -79,10 +79,10 @@ const (
 	opXRAvatarLOD      = 0xF006
 
 	// Kernel control opcodes (mirror kernel.proto / opcodes.proto).
-	opMatchEnded             = 0x0007
-	opError                  = 0x0008
-	opWarnRateLimited        = 0x0013
-	opWarnAvatarFallback     = 0x0016
+	opMatchEnded         = 0x0007
+	opError              = 0x0008
+	opWarnRateLimited    = 0x0013
+	opWarnAvatarFallback = 0x0016
 
 	// kernel.proto EndReason mirror.
 	endReasonCompleted        = 1
@@ -104,10 +104,10 @@ const (
 	defaultBodyHz             = 30
 	defaultFaceHz             = 45
 	defaultFingerHz           = 30
-	defaultMaxAvatars         = 16
+	defaultMaxAvatars         = 0 // 0 = unlimited; operators may still set a finite cap.
 	defaultMinPlayers         = 1
-	defaultAOIRadiusMm        = 6_000 // 6 m
-	defaultAOICellSizeMm      = 8_000 // 8 m grid bucket
+	defaultAOIRadiusMm        = 6_000          // 6 m
+	defaultAOICellSizeMm      = 8_000          // 8 m grid bucket
 	defaultMaxMatchDurationMs = 60 * 60 * 1000 // 1 hr hard cap
 	defaultReconnectGraceMs   = 60_000
 
@@ -129,36 +129,36 @@ const (
 
 // initParams shapes the JSON in template_init that mp_create_match forwards.
 type initParams struct {
-	GameID                string  `json:"game_id"`
-	TickHz                int     `json:"tick_hz"`
-	HeadHz                int     `json:"head_hz"`
-	HandHz                int     `json:"hand_hz"`
-	BodyHz                int     `json:"body_hz"`
-	FaceHz                int     `json:"face_hz"`
-	FingerHz              int     `json:"finger_hz"`
-	MaxAvatars            int     `json:"max_avatars"`
-	MinPlayers            int     `json:"min_players"`
-	MaxMatchDurationMs    int64   `json:"max_match_duration_ms"`
-	ReconnectGraceMs      int64   `json:"reconnect_grace_ms"`
-	EnableAOI             bool    `json:"enable_aoi"`
-	AOIRadiusMm           int32   `json:"aoi_radius_mm"`
-	AOICellSizeMm         int32   `json:"aoi_cell_size_mm"`
-	EnableLODAutoDemote   bool    `json:"enable_lod_auto_demote"`
-	DefaultQuantProfile   uint32  `json:"default_quant_profile"`
-	VoiceRoomID           string  `json:"voice_room_id"`
-	VoicePositionRelay    bool    `json:"voice_position_relay"`
-	SpatialFrameID        string  `json:"spatial_frame_id"`
+	GameID              string `json:"game_id"`
+	TickHz              int    `json:"tick_hz"`
+	HeadHz              int    `json:"head_hz"`
+	HandHz              int    `json:"hand_hz"`
+	BodyHz              int    `json:"body_hz"`
+	FaceHz              int    `json:"face_hz"`
+	FingerHz            int    `json:"finger_hz"`
+	MaxAvatars          int    `json:"max_avatars"`
+	MinPlayers          int    `json:"min_players"`
+	MaxMatchDurationMs  int64  `json:"max_match_duration_ms"`
+	ReconnectGraceMs    int64  `json:"reconnect_grace_ms"`
+	EnableAOI           bool   `json:"enable_aoi"`
+	AOIRadiusMm         int32  `json:"aoi_radius_mm"`
+	AOICellSizeMm       int32  `json:"aoi_cell_size_mm"`
+	EnableLODAutoDemote bool   `json:"enable_lod_auto_demote"`
+	DefaultQuantProfile uint32 `json:"default_quant_profile"`
+	VoiceRoomID         string `json:"voice_room_id"`
+	VoicePositionRelay  bool   `json:"voice_position_relay"`
+	SpatialFrameID      string `json:"spatial_frame_id"`
 }
 
 // PoseQuantized — wire JSON, mirrors PoseQuantized proto.
 type poseQuantizedJSON struct {
-	PxMm           int32  `json:"px_mm"`
-	PyMm           int32  `json:"py_mm"`
-	PzMm           int32  `json:"pz_mm"`
-	RotPacked      uint32 `json:"rot_packed"`
-	QuantProfile   uint32 `json:"quant_profile"`
-	TsMs           int64  `json:"ts_ms"`
-	ConfidencePct  uint32 `json:"confidence_pct"`
+	PxMm          int32  `json:"px_mm"`
+	PyMm          int32  `json:"py_mm"`
+	PzMm          int32  `json:"pz_mm"`
+	RotPacked     uint32 `json:"rot_packed"`
+	QuantProfile  uint32 `json:"quant_profile"`
+	TsMs          int64  `json:"ts_ms"`
+	ConfidencePct uint32 `json:"confidence_pct"`
 }
 
 type avatarChannel int
@@ -202,56 +202,56 @@ type channelBudget struct {
 
 // avatarState — per-user per-match avatar bookkeeping.
 type avatarState struct {
-	UserID         string
-	IsAgent        bool
-	JoinedAtMs     int64
-	HeadPose       *poseQuantizedJSON
-	HandLeft       *poseQuantizedJSON
-	HandRight      *poseQuantizedJSON
-	Body           []poseQuantizedJSON
-	Face           []byte // raw bytes (≤64)
-	FingerLeft     []byte // 15 uint8s
-	FingerRight    []byte
-	LOD            uint32
-	LODReason      string
-	GripL          uint32
-	GripR          uint32
-	TriggerL       uint32
-	TriggerR       uint32
-	HeadBudget     channelBudget
-	HandLBudget    channelBudget
-	HandRBudget    channelBudget
-	BodyBudget     channelBudget
-	FaceBudget     channelBudget
-	FingerLBudget  channelBudget
-	FingerRBudget  channelBudget
-	LastSeenMs     int64
-	WarnedThisWin  bool
+	UserID        string
+	IsAgent       bool
+	JoinedAtMs    int64
+	HeadPose      *poseQuantizedJSON
+	HandLeft      *poseQuantizedJSON
+	HandRight     *poseQuantizedJSON
+	Body          []poseQuantizedJSON
+	Face          []byte // raw bytes (≤64)
+	FingerLeft    []byte // 15 uint8s
+	FingerRight   []byte
+	LOD           uint32
+	LODReason     string
+	GripL         uint32
+	GripR         uint32
+	TriggerL      uint32
+	TriggerR      uint32
+	HeadBudget    channelBudget
+	HandLBudget   channelBudget
+	HandRBudget   channelBudget
+	BodyBudget    channelBudget
+	FaceBudget    channelBudget
+	FingerLBudget channelBudget
+	FingerRBudget channelBudget
+	LastSeenMs    int64
+	WarnedThisWin bool
 	// Latest pose used for AOI bucket lookup: derive from HeadPose.
 }
 
 // matchState — runtime state per match.
 type matchState struct {
-	init                  initParams
-	tickHz                int
-	tickPeriodMs          int64
-	startUnixMs           int64
-	matchEndAtUnixMs      int64
-	pendingEndReason      string
-	avatars               map[string]*avatarState
-	outboundSeq           uint64
-	matchID               string
-	terminated            bool
-	currentTick           int
+	init             initParams
+	tickHz           int
+	tickPeriodMs     int64
+	startUnixMs      int64
+	matchEndAtUnixMs int64
+	pendingEndReason string
+	avatars          map[string]*avatarState
+	outboundSeq      uint64
+	matchID          string
+	terminated       bool
+	currentTick      int
 
 	// Pose buffers. Last-write-wins per (user, channel) per server tick.
-	dirtyHead     map[string]bool
-	dirtyHandL    map[string]bool
-	dirtyHandR    map[string]bool
-	dirtyBody     map[string]bool
-	dirtyFace     map[string]bool
-	dirtyFingerL  map[string]bool
-	dirtyFingerR  map[string]bool
+	dirtyHead    map[string]bool
+	dirtyHandL   map[string]bool
+	dirtyHandR   map[string]bool
+	dirtyBody    map[string]bool
+	dirtyFace    map[string]bool
+	dirtyFingerL map[string]bool
+	dirtyFingerR map[string]bool
 
 	// AOI grid: cellID = "x,y,z" -> set of user_ids.
 	aoiGrid map[string]map[string]bool
@@ -278,22 +278,22 @@ type Match struct{}
 
 func (m *Match) MatchInit(ctx context.Context, logger runtime.Logger, db *sql.DB, nk runtime.NakamaModule, params map[string]interface{}) (interface{}, int, string) {
 	init := initParams{
-		TickHz:               defaultTickHz,
-		HeadHz:               defaultHeadHz,
-		HandHz:               defaultHandHz,
-		BodyHz:               defaultBodyHz,
-		FaceHz:               defaultFaceHz,
-		FingerHz:             defaultFingerHz,
-		MaxAvatars:           defaultMaxAvatars,
-		MinPlayers:           defaultMinPlayers,
-		MaxMatchDurationMs:   defaultMaxMatchDurationMs,
-		ReconnectGraceMs:     defaultReconnectGraceMs,
-		EnableAOI:            true,
-		AOIRadiusMm:          defaultAOIRadiusMm,
-		AOICellSizeMm:        defaultAOICellSizeMm,
-		EnableLODAutoDemote:  true,
-		DefaultQuantProfile:  1,
-		VoicePositionRelay:   true,
+		TickHz:              defaultTickHz,
+		HeadHz:              defaultHeadHz,
+		HandHz:              defaultHandHz,
+		BodyHz:              defaultBodyHz,
+		FaceHz:              defaultFaceHz,
+		FingerHz:            defaultFingerHz,
+		MaxAvatars:          defaultMaxAvatars,
+		MinPlayers:          defaultMinPlayers,
+		MaxMatchDurationMs:  defaultMaxMatchDurationMs,
+		ReconnectGraceMs:    defaultReconnectGraceMs,
+		EnableAOI:           true,
+		AOIRadiusMm:         defaultAOIRadiusMm,
+		AOICellSizeMm:       defaultAOICellSizeMm,
+		EnableLODAutoDemote: true,
+		DefaultQuantProfile: 1,
+		VoicePositionRelay:  true,
 	}
 	if rawTI, ok := params["template_init"]; ok && rawTI != nil {
 		if b, err := json.Marshal(rawTI); err == nil {
@@ -343,14 +343,14 @@ func (m *Match) MatchInit(ctx context.Context, logger runtime.Logger, db *sql.DB
 
 	gameID := stringFromMap(params, "game_id", init.GameID)
 	label := mustJSON(map[string]interface{}{
-		"template_id":    templateID,
-		"game_id":        gameID,
-		"tick_hz":        init.TickHz,
-		"max_avatars":    init.MaxAvatars,
-		"head_hz":        init.HeadHz,
-		"voice_relay":    init.VoicePositionRelay,
-		"aoi":            init.EnableAOI,
-		"spatial_frame":  init.SpatialFrameID,
+		"template_id":   templateID,
+		"game_id":       gameID,
+		"tick_hz":       init.TickHz,
+		"max_avatars":   init.MaxAvatars,
+		"head_hz":       init.HeadHz,
+		"voice_relay":   init.VoicePositionRelay,
+		"aoi":           init.EnableAOI,
+		"spatial_frame": init.SpatialFrameID,
 	})
 	logger.Info("[avatar_replication] match init template=%s tickHz=%d max=%d aoi=%v voiceRelay=%v",
 		templateID, init.TickHz, init.MaxAvatars, init.EnableAOI, init.VoicePositionRelay)
@@ -362,7 +362,7 @@ func (m *Match) MatchJoinAttempt(ctx context.Context, logger runtime.Logger, db 
 	if s.terminated {
 		return s, false, "match ended"
 	}
-	if len(s.avatars) >= s.init.MaxAvatars {
+	if s.init.MaxAvatars > 0 && len(s.avatars) >= s.init.MaxAvatars {
 		return s, false, "match full"
 	}
 	return s, true, ""
@@ -534,8 +534,8 @@ func validateUserOwnership(payloadUserID, senderUserID string) bool {
 
 func (s *matchState) ingestHead(av *avatarState, payload json.RawMessage, dispatcher runtime.MatchDispatcher, matchTimeMs int64, nowUnixMs int64) {
 	var msg struct {
-		UserID string             `json:"user_id"`
-		Pose   poseQuantizedJSON  `json:"pose"`
+		UserID string            `json:"user_id"`
+		Pose   poseQuantizedJSON `json:"pose"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
 		s.sendError(dispatcher, []string{av.UserID}, errBadPayload, "head: bad payload", matchTimeMs)
@@ -945,11 +945,11 @@ func (s *matchState) flushDirty(dispatcher runtime.MatchDispatcher, matchTimeMs 
 				continue
 			}
 			payload := mustMarshal(map[string]interface{}{
-				"user_id":             uid,
-				"head":                av.HeadPose,
-				"talking_volume_pct":  0,
-				"frame_id":            s.init.SpatialFrameID,
-				"voice_room_id":       s.init.VoiceRoomID,
+				"user_id":            uid,
+				"head":               av.HeadPose,
+				"talking_volume_pct": 0,
+				"frame_id":           s.init.SpatialFrameID,
+				"voice_room_id":      s.init.VoiceRoomID,
 			})
 			// Voice-position messages are AOI-filtered same as head pose.
 			recips := s.recipientsFor(uid)
@@ -1062,14 +1062,14 @@ func buildOutcomes(s *matchState) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(s.avatars))
 	for _, av := range s.avatars {
 		out = append(out, map[string]interface{}{
-			"user_id":       av.UserID,
-			"is_agent":      av.IsAgent,
-			"placement":     0,
-			"score":         0,
-			"completed":     true,
-			"left_early":    false,
-			"final_lod":     av.LOD,
-			"game_payload":  map[string]interface{}{},
+			"user_id":      av.UserID,
+			"is_agent":     av.IsAgent,
+			"placement":    0,
+			"score":        0,
+			"completed":    true,
+			"left_early":   false,
+			"final_lod":    av.LOD,
+			"game_payload": map[string]interface{}{},
 		})
 	}
 	return out

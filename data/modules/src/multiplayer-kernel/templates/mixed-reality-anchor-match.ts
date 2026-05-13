@@ -104,7 +104,8 @@ namespace MpKernelMrAnchor {
   }
 
   export var DefaultInit: IInit = {
-    max_users:                  16,
+    // 0 = unlimited. Large XR rooms should still use AOI/sharding for QoS.
+    max_users:                  0,
     anchor_resolve_timeout_ms:  15_000,
     require_anchor_to_join:     false,
     allow_qr_fallback:          true,
@@ -222,7 +223,7 @@ namespace MpKernelMrAnchor {
       var ks = state as IState;
       var memberCount = 0;
       for (var k in ks.participants) memberCount++;
-      if (!ks.participants[presence.userId] && memberCount >= ks.init.max_users) {
+      if (ks.init.max_users > 0 && !ks.participants[presence.userId] && memberCount >= ks.init.max_users) {
         return { state: ks, accept: false, rejectMessage: "match full" };
       }
       // Optional require_anchor_to_join: not enforceable until the

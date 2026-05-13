@@ -76,7 +76,9 @@ namespace MpKernelPersistentParty {
     party_id:                "",
     name:                    "Party",
     visibility:              "private", // "private" | "friends" | "public"
-    max_members:             8,
+    // 0 = unlimited party membership. Operators may still cap specific
+    // game modes through party settings.
+    max_members:             0,
     auto_kick_idle_ms:       0,         // 0 = never auto-kick
     chat_per_second:         2,
     chat_enabled:            true,
@@ -116,7 +118,7 @@ namespace MpKernelPersistentParty {
   function readDoc(nk: nkruntime.Nakama, partyId: string): IPartyDoc | null {
     if (!partyId) return null;
     try {
-      var rows = nk.storageRead([{ collection: STORAGE_COLLECTION, key: partyId, userId: "" }]);
+      var rows = nk.storageRead([{ collection: STORAGE_COLLECTION, key: partyId, userId: Constants.SYSTEM_USER_ID }]);
       if (!rows || rows.length === 0) return null;
       return rows[0].value as IPartyDoc;
     } catch (_e) {
@@ -132,7 +134,7 @@ namespace MpKernelPersistentParty {
         value:           doc as any,
         permissionRead:  2, // public-read; member metadata is non-sensitive
         permissionWrite: 0,
-        userId:          ""
+        userId:          Constants.SYSTEM_USER_ID
       }]);
     } catch (e: any) {
       logger.warn("[PersistentParty] storageWrite party=%s err=%s",
@@ -156,7 +158,7 @@ namespace MpKernelPersistentParty {
       settings: {
         visibility:        init.visibility || "private",
         auto_kick_idle_ms: init.auto_kick_idle_ms || 0,
-        max_members:       init.max_members || 8,
+        max_members:       (typeof init.max_members === "number") ? init.max_members : 0,
         game_payload:      init.game_payload || {}
       },
       invites: {},
@@ -186,7 +188,7 @@ namespace MpKernelPersistentParty {
           settings: {
             visibility:        init.visibility || "private",
             auto_kick_idle_ms: init.auto_kick_idle_ms || 0,
-            max_members:       init.max_members || 8,
+            max_members:       (typeof init.max_members === "number") ? init.max_members : 0,
             game_payload:      init.game_payload || {}
           },
           invites: {},
@@ -239,7 +241,7 @@ namespace MpKernelPersistentParty {
       // Capacity: counted by *member* slots, not live presences.
       var memberCount = 0;
       for (var k in ks.party.members) memberCount++;
-      if (!member && memberCount >= ks.party.settings.max_members) {
+      if (ks.party.settings.max_members > 0 && !member && memberCount >= ks.party.settings.max_members) {
         return { state: ks, accept: false, rejectMessage: "party full" };
       }
       return { state: ks, accept: true };
@@ -560,10 +562,10 @@ namespace MpKernelPersistentParty {
       if (p.visibility === "private" || p.visibility === "friends" || p.visibility === "public") {
         ks.party.settings.visibility = p.visibility;
       }
-      if (typeof p.max_members === "number" && p.max_members > 0 && p.max_members <= 32) {
+      if (typeof p.max_members === "number" && p.max_members >= 0) {
         // Don't shrink below current member count.
         var mc = 0; for (var um in ks.party.members) mc++;
-        ks.party.settings.max_members = Math.max(mc, p.max_members);
+        ks.party.settings.max_members = p.max_members === 0 ? 0 : Math.max(mc, p.max_members);
       }
       if (p.game_payload) {
         ks.party.settings.game_payload = p.game_payload;

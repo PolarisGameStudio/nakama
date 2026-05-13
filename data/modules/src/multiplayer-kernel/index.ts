@@ -73,6 +73,7 @@ namespace MpKernelModule {
     }
 
     var matchParams: { [k: string]: any } = {
+      template_id: req.template_id,
       game_id: req.game_id || "unknown",
       region: req.region || "",
       template_init: req.template_init || {},
@@ -229,36 +230,49 @@ namespace MpKernelModule {
     }
   };
 
-  // Single boot path: registers all built-in templates + RPCs.
-  export function register(initializer: nkruntime.Initializer, logger: nkruntime.Logger): void {
+  var templatesPrepared = false;
+
+  function fallbackLogger(logger?: nkruntime.Logger): nkruntime.Logger {
+    if (logger) return logger;
+    return {
+      debug: function () {},
+      info: function () {},
+      warn: function () {},
+      error: function () {}
+    } as any as nkruntime.Logger;
+  }
+
+  export function prepareTemplates(logger?: nkruntime.Logger): void {
+    if (templatesPrepared) return;
+    var log = fallbackLogger(logger);
     MpKernelCodeRegistry.bootstrapKernelRanges();
 
     // Templates ship one-by-one; P1 ships SyncTurnMatch, P5 adds
     // AsyncTurnMatch + LobbyHandoffMatch.
-    MpKernelMatch.registerTemplate(initializer, MpKernelSyncTurn.template, logger);
+    MpKernelMatch.registerTemplate(undefined as any, MpKernelSyncTurn.template, log);
     registerTemplateId(MpKernelSyncTurn.template.templateId);
     MpKernelSyncTurn.registerGenerator(ECHO_GENERATOR);
 
-    MpKernelMatch.registerTemplate(initializer, MpKernelAsyncTurn.template, logger);
+    MpKernelMatch.registerTemplate(undefined as any, MpKernelAsyncTurn.template, log);
     registerTemplateId(MpKernelAsyncTurn.template.templateId);
     MpKernelAsyncTurn.registerGenerator(ASYNC_ECHO_GENERATOR);
 
-    MpKernelMatch.registerTemplate(initializer, MpKernelLobbyHandoff.template, logger);
+    MpKernelMatch.registerTemplate(undefined as any, MpKernelLobbyHandoff.template, log);
     registerTemplateId(MpKernelLobbyHandoff.template.templateId);
 
-    MpKernelMatch.registerTemplate(initializer, MpKernelTournament.template, logger);
+    MpKernelMatch.registerTemplate(undefined as any, MpKernelTournament.template, log);
     registerTemplateId(MpKernelTournament.template.templateId);
 
-    MpKernelMatch.registerTemplate(initializer, MpKernelLiveEvent.template, logger);
+    MpKernelMatch.registerTemplate(undefined as any, MpKernelLiveEvent.template, log);
     registerTemplateId(MpKernelLiveEvent.template.templateId);
 
-    MpKernelMatch.registerTemplate(initializer, MpKernelPersistentParty.template, logger);
+    MpKernelMatch.registerTemplate(undefined as any, MpKernelPersistentParty.template, log);
     registerTemplateId(MpKernelPersistentParty.template.templateId);
 
-    MpKernelMatch.registerTemplate(initializer, MpKernelConvParty.template, logger);
+    MpKernelMatch.registerTemplate(undefined as any, MpKernelConvParty.template, log);
     registerTemplateId(MpKernelConvParty.template.templateId);
 
-    MpKernelMatch.registerTemplate(initializer, MpKernelMrAnchor.template, logger);
+    MpKernelMatch.registerTemplate(undefined as any, MpKernelMrAnchor.template, log);
     registerTemplateId(MpKernelMrAnchor.template.templateId);
 
     // RealtimeTickMatch lives in a native Go plugin (data/modules/realtime_tick.so)
@@ -278,7 +292,7 @@ namespace MpKernelModule {
       });
     } catch (e) {
       // Range already reserved (re-register on hot reload). Idempotent.
-      logger.debug("[MpKernel] realtime-tick range already reserved: " +
+      log.debug("[MpKernel] realtime-tick range already reserved: " +
         ((e && (e as any).message) ? (e as any).message : String(e)));
     }
 
@@ -299,9 +313,16 @@ namespace MpKernelModule {
         template_id: TEMPLATE_IDS.AVATAR_REPLICATION_V1
       });
     } catch (e) {
-      logger.debug("[MpKernel] avatar-replication range already reserved: " +
+      log.debug("[MpKernel] avatar-replication range already reserved: " +
         ((e && (e as any).message) ? (e as any).message : String(e)));
     }
+
+    templatesPrepared = true;
+  }
+
+  // Single boot path: registers all built-in templates + RPCs.
+  export function register(initializer: nkruntime.Initializer, logger: nkruntime.Logger): void {
+    prepareTemplates(logger);
 
     initializer.registerRpc("mp_create_match",       rpcCreateMatch);
     initializer.registerRpc("mp_read_match_result",  rpcReadMatchResult);
@@ -362,4 +383,23 @@ namespace MpKernelModule {
     logger.info("[MpKernel] kernel registered; templates=%d generators=echo",
       MpKernelCodeRegistry.listAll().length);
   }
+}
+
+function mpPrepareTemplates(logger?: nkruntime.Logger): void {
+  MpKernelModule.prepareTemplates(logger);
+}
+
+function mpCreateMatchRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+  MpKernelModule.prepareTemplates(logger);
+  return MpKernelModule.rpcCreateMatch(ctx, logger, nk, payload);
+}
+
+function mpReadMatchResultRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+  MpKernelModule.prepareTemplates(logger);
+  return MpKernelModule.rpcReadMatchResult(ctx, logger, nk, payload);
+}
+
+function mpListTemplatesRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+  MpKernelModule.prepareTemplates(logger);
+  return MpKernelModule.rpcListTemplates(ctx, logger, nk, payload);
 }

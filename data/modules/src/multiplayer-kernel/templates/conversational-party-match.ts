@@ -79,14 +79,17 @@ namespace MpKernelConvParty {
   }
 
   export var DefaultInit: IRoomSettings = {
-    max_members:           24,
+    // 0 = unlimited room membership. Speaker queue, chat, reaction, and
+    // transcript limits still protect the control plane.
+    max_members:           0,
     speaker_floor_seconds: 60,
     speaker_queue_cap:     50,
     reaction_rate_per_sec: 5,
     chat_rate_per_sec:     5,
     allow_text_chat:       true,
     allow_agents:          true,
-    max_agents:            4,
+    // 0 = unlimited AI agents. Persona/provider budgets still apply.
+    max_agents:            0,
     moderation_enabled:    true,
     transcript_enabled:    true,
     default_voice_mode:    "spatial",
@@ -143,8 +146,7 @@ namespace MpKernelConvParty {
     for (var k in DefaultInit) if (DefaultInit.hasOwnProperty(k)) out[k] = (DefaultInit as any)[k];
     if (params) for (var k2 in params) if (params.hasOwnProperty(k2)) out[k2] = params[k2];
     // Hard guards.
-    if (out.max_members < 2) out.max_members = 2;
-    if (out.max_members > 64) out.max_members = 64;
+    if (out.max_members > 0 && out.max_members < 2) out.max_members = 2;
     if (out.speaker_floor_seconds < 5) out.speaker_floor_seconds = 5;
     if (out.speaker_floor_seconds > 600) out.speaker_floor_seconds = 600;
     if (out.speaker_queue_cap < 1) out.speaker_queue_cap = 1;
@@ -230,14 +232,14 @@ namespace MpKernelConvParty {
       var isA = isAgent(u);
       // Capacity by member slots, not live presences.
       if (!s.members[u]) {
-        if (memberCount(s) >= s.init.max_members) {
+        if (s.init.max_members > 0 && memberCount(s) >= s.init.max_members) {
           return { state: s, accept: false, rejectMessage: "room full" };
         }
         if (isA) {
           if (!s.init.allow_agents) {
             return { state: s, accept: false, rejectMessage: "agents disabled" };
           }
-          if (agentCount(s) >= s.init.max_agents) {
+          if (s.init.max_agents > 0 && agentCount(s) >= s.init.max_agents) {
             return { state: s, accept: false, rejectMessage: "agent cap reached" };
           }
         }

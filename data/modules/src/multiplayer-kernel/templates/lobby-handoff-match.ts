@@ -31,7 +31,8 @@ namespace MpKernelLobbyHandoff {
     target_region:         "",
     // Min/max players in the lobby itself.
     min_players:           2,
-    max_players:           4,
+    // 0 = unlimited lobby membership. Game plugins can set a finite cap.
+    max_players:           0,
     // Form-up window — disband if not enough ready players within this.
     form_up_timeout_ms:    60000,
     // Grace period after handoff broadcast before lobby self-terminates.
@@ -116,7 +117,7 @@ namespace MpKernelLobbyHandoff {
       if (ks.phase !== Phase.FORM_UP) {
         return { state: ks, accept: false, rejectMessage: "lobby closed" };
       }
-      if (Object.keys(ks.players).length >= ks.init.max_players) {
+      if (ks.init.max_players > 0 && Object.keys(ks.players).length >= ks.init.max_players) {
         return { state: ks, accept: false, rejectMessage: "lobby full" };
       }
       return { state: ks, accept: true };
@@ -185,6 +186,7 @@ namespace MpKernelLobbyHandoff {
           var targetId: string;
           try {
             targetId = nk.matchCreate(ks.init.target_template_id || "sync-turn-v1", {
+              template_id:      ks.init.target_template_id || "sync-turn-v1",
               game_id:          ks.init.target_game_id || "",
               region:           ks.init.target_region || "",
               template_init:    ks.init.target_template_init || {},

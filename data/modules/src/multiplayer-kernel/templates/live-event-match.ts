@@ -44,7 +44,9 @@ namespace MpKernelLiveEvent {
   export var DefaultInit = {
     event_id:          "",
     shard_index:       0,
-    max_attendees:     1024,
+    // 0 = unlimited in this room. Operators may still shard large events
+    // for latency/fan-out cost control.
+    max_attendees:     0,
     min_attendees_to_start: 1,
     // Pre-show waiting room window before phase 0 starts.
     waiting_room_ms:   60_000,
@@ -163,7 +165,7 @@ namespace MpKernelLiveEvent {
         return { state: ks, accept: false, rejectMessage: "event ended" };
       }
       var n = 0; for (var u in ks.attendees) n++;
-      if (n >= ks.init.max_attendees) {
+      if (ks.init.max_attendees > 0 && n >= ks.init.max_attendees) {
         return { state: ks, accept: false, rejectMessage: "event full" };
       }
       return { state: ks, accept: true };

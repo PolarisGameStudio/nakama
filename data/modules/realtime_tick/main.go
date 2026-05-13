@@ -1,37 +1,37 @@
 // Package main — RealtimeTickMatch as a native Nakama Go runtime module.
 //
 // Why Go and not the JS runtime:
-//   * The Goja-based JS runtime is fine for sync-turn / async / lobby
+//   - The Goja-based JS runtime is fine for sync-turn / async / lobby
 //     templates that tick at 1–4 Hz, but at 10–30 Hz with N players the
 //     per-tick allocation cost from JS-managed objects + JSON marshaling
 //     dominates. Go runs natively with stable per-tick latency and zero
 //     JIT warm-up.
-//   * Reusable WebRTC signaling relay (in-band on the match) lives here
+//   - Reusable WebRTC signaling relay (in-band on the match) lives here
 //     so realtime games can opt into P2P handoff for sub-50ms paths
 //     while the kernel still owns authoritative state.
 //
 // Wire contract:
-//   * Reserved opcode range 0x6000–0x6FFF (matches schemas/multiplayer/
+//   - Reserved opcode range 0x6000–0x6FFF (matches schemas/multiplayer/
 //     opcodes.proto); WebRTC signaling sub-range 0x6080–0x60FF.
-//   * Same envelope shape as JS templates: {h:{wire_version, op, seq,
+//   - Same envelope shape as JS templates: {h:{wire_version, op, seq,
 //     match_time_ms, sender_user_id, match_id, client_opcode_uuid}, p:{...}}.
-//   * Server-origin broadcasts share a single seq counter to satisfy
+//   - Server-origin broadcasts share a single seq counter to satisfy
 //     conformance test 06 (seq monotonicity).
 //
 // Match handler responsibilities:
-//   1. Drive a deterministic tick at configurable Hz (10/15/20/30).
-//   2. Collect OP_TICK_INPUT messages each tick.
-//   3. Apply inputs to opaque per-match game state (game plugins extend
-//      via a registered TickGenerator; default is an echo generator).
-//   4. Broadcast OP_TICK_SNAPSHOT (full) every snapshot_interval_ticks,
-//      OP_TICK_DELTA (incremental) on intermediate ticks.
-//   5. Send OP_TICK_RECONCILE privately when an input is rejected /
-//      reconciled past server-side validation.
-//   6. Periodic OP_TICK_HEARTBEAT broadcast for clock alignment.
-//   7. Relay WebRTC SDP/ICE between peers via the signaling sub-range.
-//   8. Track per-player quality (RTT/jitter/loss) from OP_TICK_QUALITY_REPORT
-//      and emit OP_TICK_RATE_PROPOSAL if an individual client is degraded.
-//   9. End match on duration cap or quorum loss.
+//  1. Drive a deterministic tick at configurable Hz (10/15/20/30).
+//  2. Collect OP_TICK_INPUT messages each tick.
+//  3. Apply inputs to opaque per-match game state (game plugins extend
+//     via a registered TickGenerator; default is an echo generator).
+//  4. Broadcast OP_TICK_SNAPSHOT (full) every snapshot_interval_ticks,
+//     OP_TICK_DELTA (incremental) on intermediate ticks.
+//  5. Send OP_TICK_RECONCILE privately when an input is rejected /
+//     reconciled past server-side validation.
+//  6. Periodic OP_TICK_HEARTBEAT broadcast for clock alignment.
+//  7. Relay WebRTC SDP/ICE between peers via the signaling sub-range.
+//  8. Track per-player quality (RTT/jitter/loss) from OP_TICK_QUALITY_REPORT
+//     and emit OP_TICK_RATE_PROPOSAL if an individual client is degraded.
+//  9. End match on duration cap or quorum loss.
 //
 // This module registers itself as a match handler under the template id
 // "realtime-tick-v1" so the JS kernel's `mp_create_match` RPC can spin
@@ -56,20 +56,20 @@ const (
 	templateID = "realtime-tick-v1"
 
 	// Wire constants — mirror schemas/multiplayer/opcodes.proto.
-	opTickInput            = 0x6000
-	opTickSnapshot         = 0x6001
-	opTickDelta            = 0x6002
-	opTickReconcile        = 0x6003
-	opTickHeartbeat        = 0x6004
-	opTickQualityReport    = 0x6005
-	opTickRateProposal     = 0x6006
-	opTickWebRTCOffer      = 0x6080
-	opTickWebRTCAnswer     = 0x6081
-	opTickWebRTCICE        = 0x6082
-	opTickWebRTCBye        = 0x6083
-	opTickWebRTCHandoff    = 0x6084
-	opMatchEnded           = 0x0007 // kernel.proto OP_MATCH_ENDED
-	opError                = 0x0008
+	opTickInput         = 0x6000
+	opTickSnapshot      = 0x6001
+	opTickDelta         = 0x6002
+	opTickReconcile     = 0x6003
+	opTickHeartbeat     = 0x6004
+	opTickQualityReport = 0x6005
+	opTickRateProposal  = 0x6006
+	opTickWebRTCOffer   = 0x6080
+	opTickWebRTCAnswer  = 0x6081
+	opTickWebRTCICE     = 0x6082
+	opTickWebRTCBye     = 0x6083
+	opTickWebRTCHandoff = 0x6084
+	opMatchEnded        = 0x0007 // kernel.proto OP_MATCH_ENDED
+	opError             = 0x0008
 
 	// kernel.proto EndReason mirror.
 	endReasonCompleted        = 1
@@ -79,14 +79,14 @@ const (
 	endReasonKernelInternal   = 7
 
 	// envelope.proto ErrorCode mirror.
-	errBadPayload  = 3
-	errRateLimited = 23
+	errBadPayload    = 3
+	errRateLimited   = 23
 	errStateOverflow = 83
 
 	// Defaults.
 	defaultTickHz                = 20
 	defaultSnapshotIntervalTicks = 6 // = ~3.3 Hz at 20 Hz tick
-	defaultMaxPlayers            = 8
+	defaultMaxPlayers            = 0 // 0 = unlimited; operators may still set a finite cap.
 	defaultMinPlayers            = 2
 	defaultReconnectGraceMs      = 60_000
 	defaultMaxMatchDurationMs    = 30 * 60 * 1000 // 30 min hard cap
@@ -99,62 +99,62 @@ const (
 
 // initParams shapes the JSON in template_init that mp_create_match forwards.
 type initParams struct {
-	GameID                 string                 `json:"game_id"`
-	TickHz                 int                    `json:"tick_hz"`
-	SnapshotIntervalTicks  int                    `json:"snapshot_interval_ticks"`
-	MinPlayers             int                    `json:"min_players"`
-	MaxPlayers             int                    `json:"max_players"`
-	MaxMatchDurationMs     int64                  `json:"max_match_duration_ms"`
-	ReconnectGraceMs       int64                  `json:"reconnect_grace_ms"`
-	GeneratorID            string                 `json:"generator_id"`
-	GeneratorParams        map[string]interface{} `json:"generator_params"`
-	WebRTCSignalingURL     string                 `json:"webrtc_signaling_url"`
-	WebRTCAllowed          bool                   `json:"webrtc_allowed"`
-	WebRTCStunServers      []string               `json:"webrtc_stun_servers"`
+	GameID                string                 `json:"game_id"`
+	TickHz                int                    `json:"tick_hz"`
+	SnapshotIntervalTicks int                    `json:"snapshot_interval_ticks"`
+	MinPlayers            int                    `json:"min_players"`
+	MaxPlayers            int                    `json:"max_players"`
+	MaxMatchDurationMs    int64                  `json:"max_match_duration_ms"`
+	ReconnectGraceMs      int64                  `json:"reconnect_grace_ms"`
+	GeneratorID           string                 `json:"generator_id"`
+	GeneratorParams       map[string]interface{} `json:"generator_params"`
+	WebRTCSignalingURL    string                 `json:"webrtc_signaling_url"`
+	WebRTCAllowed         bool                   `json:"webrtc_allowed"`
+	WebRTCStunServers     []string               `json:"webrtc_stun_servers"`
 }
 
 // playerState — per-player bookkeeping inside the match.
 type playerState struct {
-	UserID         string
-	IsAgent        bool
+	UserID          string
+	IsAgent         bool
 	JoinedAtMatchMs int64
-	LastInputTick  int
-	LastInputSeq   uint64
-	InputsThisTick int
-	RTTms          int
-	JitterMs       int
-	LossPct        float64
-	WebRTCActive   bool
+	LastInputTick   int
+	LastInputSeq    uint64
+	InputsThisTick  int
+	RTTms           int
+	JitterMs        int
+	LossPct         float64
+	WebRTCActive    bool
 }
 
 // matchState — runtime state per match.
 type matchState struct {
-	init                    initParams
-	tickHz                  int
-	tickPeriodMs            int64
-	snapshotIntervalTicks   int
-	heartbeatEveryTicks     int
-	startUnixMs             int64
-	matchTimeMsAtTick0      int64
-	currentTick             int
-	matchEndAtUnixMs        int64
-	pendingEndReason        string
-	players                 map[string]*playerState
-	pendingInputs           []pendingInput // collected this tick
-	gameState               map[string]interface{} // opaque
-	lastSnapshotTick        int
-	outboundSeq             uint64
-	matchID                 string
-	terminated              bool
-	gen                     TickGenerator
+	init                  initParams
+	tickHz                int
+	tickPeriodMs          int64
+	snapshotIntervalTicks int
+	heartbeatEveryTicks   int
+	startUnixMs           int64
+	matchTimeMsAtTick0    int64
+	currentTick           int
+	matchEndAtUnixMs      int64
+	pendingEndReason      string
+	players               map[string]*playerState
+	pendingInputs         []pendingInput         // collected this tick
+	gameState             map[string]interface{} // opaque
+	lastSnapshotTick      int
+	outboundSeq           uint64
+	matchID               string
+	terminated            bool
+	gen                   TickGenerator
 }
 
 // pendingInput — buffered input awaiting tick processing.
 type pendingInput struct {
-	UserID         string
-	Seq            uint64
-	OpCode         int64
-	Payload        json.RawMessage
+	UserID            string
+	Seq               uint64
+	OpCode            int64
+	Payload           json.RawMessage
 	ReceivedAtMatchMs int64
 }
 
@@ -217,7 +217,7 @@ func (echoGenerator) BuildSnapshot(state map[string]interface{}, tick int) map[s
 }
 func (echoGenerator) BuildResult(state map[string]interface{}, players []string) map[string]interface{} {
 	return map[string]interface{}{
-		"players":   players,
+		"players":    players,
 		"final_tick": state["size"],
 	}
 }
@@ -236,13 +236,13 @@ type envelope struct {
 }
 
 type envelopeHeader struct {
-	WireVersion       int    `json:"wire_version"`
-	Op                int    `json:"op"`
-	Seq               uint64 `json:"seq"`
-	MatchTimeMs       int64  `json:"match_time_ms"`
-	SenderUserID      string `json:"sender_user_id"`
-	MatchID           string `json:"match_id"`
-	ClientOpcodeUUID  string `json:"client_opcode_uuid"`
+	WireVersion      int    `json:"wire_version"`
+	Op               int    `json:"op"`
+	Seq              uint64 `json:"seq"`
+	MatchTimeMs      int64  `json:"match_time_ms"`
+	SenderUserID     string `json:"sender_user_id"`
+	MatchID          string `json:"match_id"`
+	ClientOpcodeUUID string `json:"client_opcode_uuid"`
 }
 
 // Match implements runtime.Match.
@@ -271,7 +271,7 @@ func (m *Match) MatchInit(ctx context.Context, logger runtime.Logger, db *sql.DB
 	if init.TickHz > 60 {
 		init.TickHz = 60
 	}
-	if init.MaxPlayers < init.MinPlayers {
+	if init.MaxPlayers > 0 && init.MaxPlayers < init.MinPlayers {
 		init.MaxPlayers = init.MinPlayers
 	}
 	if init.SnapshotIntervalTicks <= 0 {
@@ -302,12 +302,12 @@ func (m *Match) MatchInit(ctx context.Context, logger runtime.Logger, db *sql.DB
 	}
 	gameID := stringFromMap(params, "game_id", init.GameID)
 	label := mustJSON(map[string]interface{}{
-		"template_id":     templateID,
-		"game_id":         gameID,
-		"tick_hz":         init.TickHz,
-		"max_players":     init.MaxPlayers,
-		"min_players":     init.MinPlayers,
-		"webrtc_allowed":  init.WebRTCAllowed,
+		"template_id":    templateID,
+		"game_id":        gameID,
+		"tick_hz":        init.TickHz,
+		"max_players":    init.MaxPlayers,
+		"min_players":    init.MinPlayers,
+		"webrtc_allowed": init.WebRTCAllowed,
 	})
 	logger.Info("[realtime_tick] match init template=%s tickHz=%d max=%d webrtc=%v",
 		templateID, init.TickHz, init.MaxPlayers, init.WebRTCAllowed)
@@ -319,7 +319,7 @@ func (m *Match) MatchJoinAttempt(ctx context.Context, logger runtime.Logger, db 
 	if s.terminated {
 		return s, false, "match ended"
 	}
-	if len(s.players) >= s.init.MaxPlayers {
+	if s.init.MaxPlayers > 0 && len(s.players) >= s.init.MaxPlayers {
 		return s, false, "match full"
 	}
 	return s, true, ""
@@ -435,7 +435,7 @@ func (m *Match) MatchLoop(ctx context.Context, logger runtime.Logger, db *sql.DB
 	}
 	if int(tick)%s.heartbeatEveryTicks == 0 {
 		s.broadcast(dispatcher, opTickHeartbeat, mustMarshal(map[string]interface{}{
-			"tick":         int(tick),
+			"tick":           int(tick),
 			"server_unix_ms": nowUnixMs,
 			"match_time_ms":  matchTimeMs,
 		}), matchTimeMs)
@@ -501,9 +501,9 @@ func (s *matchState) handleInbound(m runtime.MatchData, dispatcher runtime.Match
 	case opTickInput:
 		if pl.InputsThisTick >= maxInputsPerTickPerPlayer {
 			s.sendTo(dispatcher, opError, mustMarshal(map[string]interface{}{
-				"code":         errRateLimited,
-				"detail":       "too many inputs this tick",
-				"limit":        maxInputsPerTickPerPlayer,
+				"code":   errRateLimited,
+				"detail": "too many inputs this tick",
+				"limit":  maxInputsPerTickPerPlayer,
 			}), []string{user}, matchTimeMs)
 			return
 		}
@@ -561,12 +561,12 @@ func (s *matchState) relayWebRTC(env envelope, dispatcher runtime.MatchDispatche
 	}
 	// Stamp the sender server-side; we don't trust client-provided sender_user_id.
 	envCopy := envelopeHeader{
-		WireVersion:  wireVersion,
-		Op:           op,
-		Seq:          atomic.AddUint64(&s.outboundSeq, 1) - 1,
-		MatchTimeMs:  matchTimeMs,
-		SenderUserID: fromUser,
-		MatchID:      s.matchID,
+		WireVersion:      wireVersion,
+		Op:               op,
+		Seq:              atomic.AddUint64(&s.outboundSeq, 1) - 1,
+		MatchTimeMs:      matchTimeMs,
+		SenderUserID:     fromUser,
+		MatchID:          s.matchID,
 		ClientOpcodeUUID: env.H.ClientOpcodeUUID,
 	}
 	out, _ := json.Marshal(envelope{H: envCopy, P: env.P})
@@ -641,13 +641,13 @@ func endMatch(s *matchState, dispatcher runtime.MatchDispatcher, reasonEnum int,
 		players = append(players, u)
 	}
 	resultEnvelope := map[string]interface{}{
-		"match_id":          s.matchID,
-		"template_id":       templateID,
-		"started_unix_ms":   s.startUnixMs,
-		"ended_unix_ms":     time.Now().UnixMilli(),
-		"duration_ms":       matchTimeMs,
-		"outcomes":          buildOutcomes(s),
-		"game_payload":      s.gen.BuildResult(s.gameState, players),
+		"match_id":        s.matchID,
+		"template_id":     templateID,
+		"started_unix_ms": s.startUnixMs,
+		"ended_unix_ms":   time.Now().UnixMilli(),
+		"duration_ms":     matchTimeMs,
+		"outcomes":        buildOutcomes(s),
+		"game_payload":    s.gen.BuildResult(s.gameState, players),
 	}
 	body := mustMarshal(map[string]interface{}{
 		"reason":          reasonEnum,
@@ -661,12 +661,12 @@ func buildOutcomes(s *matchState) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(s.players))
 	for _, p := range s.players {
 		out = append(out, map[string]interface{}{
-			"user_id":     p.UserID,
-			"is_agent":    p.IsAgent,
-			"placement":   0,
-			"score":       0,
-			"completed":   true,
-			"left_early":  false,
+			"user_id":      p.UserID,
+			"is_agent":     p.IsAgent,
+			"placement":    0,
+			"score":        0,
+			"completed":    true,
+			"left_early":   false,
 			"game_payload": map[string]interface{}{},
 		})
 	}

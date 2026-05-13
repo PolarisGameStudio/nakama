@@ -16,8 +16,12 @@ namespace MpKernelCodeRegistry {
   var owners: IRangeOwner[] = [];
 
   export function register(owner: IRangeOwner): void {
+    if (!owner || typeof owner.name === "undefined") {
+      throw new Error("[MpKernelCodeRegistry] invalid range owner");
+    }
     for (var i = 0; i < owners.length; i++) {
       var o = owners[i];
+      if (!o) continue;
       if (o.name === owner.name) {
         // Idempotent re-registration (e.g. test reload): replace.
         owners[i] = owner;
@@ -59,13 +63,11 @@ namespace MpKernelCodeRegistry {
     if (owners.length > 0) return;
     // Mirrors the canonical proto reservations in
     // schemas/multiplayer/opcodes.proto. Template ranges register
-    // themselves on registerTemplate; ranges below are pre-claimed so
-    // any accidental overlap fails fast at module init.
+    // themselves on registerTemplate; do not pre-claim template-owned
+    // ranges here or the boot path will reject valid built-in templates.
     register({ name: "kernel-control",          from: 0x0000, to: 0x0FFF });
-    register({ name: "social-conversational",   from: 0x1000, to: 0x1FFF });
     register({ name: "agents",                  from: 0x2000, to: 0x2FFF });
     register({ name: "moderation",              from: 0x3000, to: 0x3FFF });
     register({ name: "game-defined",            from: 0xC000, to: 0xCFFF });
-    register({ name: "xr-pose-fast-path",       from: 0xF000, to: 0xFFFF });
   }
 }

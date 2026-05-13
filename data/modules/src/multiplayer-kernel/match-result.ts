@@ -33,7 +33,7 @@ namespace MpKernelMatchResult {
       // Permissions: 1 = owner-only read; 0 = no public write.
       permissionRead: 2,   // public-read (admin dashboard reads under system).
       permissionWrite: 0,
-      userId: ""           // System-owned record.
+      userId: Constants.SYSTEM_USER_ID
     };
     try {
       nk.storageWrite([write]);
@@ -93,7 +93,7 @@ namespace MpKernelMatchResult {
       var rows = nk.storageRead([{
         collection: COLLECTION,
         key: matchId,
-        userId: ""
+        userId: Constants.SYSTEM_USER_ID
       }]);
       if (!rows || rows.length === 0) return null;
       return rows[0].value as MpKernel.IMatchResultEnvelope;

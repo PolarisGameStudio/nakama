@@ -40,7 +40,8 @@ namespace MpKernelTournament {
     // Stable identifier the game plugin chose; used as storage key.
     tournament_id:               "",
     // Max bracket size; rounded up to next power of 2 for single-elim.
-    max_players:                 16,
+    // 0 = unlimited until registration_close_unix_ms / default window.
+    max_players:                 0,
     min_players:                 2,
     // Registration window — server closes phase on whichever fires first.
     registration_open_unix_ms:   0,        // 0 = open immediately
@@ -350,7 +351,7 @@ namespace MpKernelTournament {
       }
       var n = 0;
       for (var u in ks.registrants) n++;
-      if (n >= ks.init.max_players) {
+      if (ks.init.max_players > 0 && n >= ks.init.max_players) {
         return { state: ks, accept: false, rejectMessage: "tournament full" };
       }
       var isAgent = (presence.userId.indexOf("agt_") === 0);
@@ -414,7 +415,7 @@ namespace MpKernelTournament {
       if (ks.phase === Phase.REGISTRATION) {
         var n = 0;
         for (var u in ks.registrants) n++;
-        var capHit = n >= ks.init.max_players;
+        var capHit = ks.init.max_players > 0 && n >= ks.init.max_players;
         var deadlineHit = nowUnixMs >= ks.registration_close_unix_ms_effective;
         if (capHit || deadlineHit) {
           if (n < ks.init.min_players) {
