@@ -52,8 +52,12 @@ function InitModule(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkrunt
   }
 
   // ---- Bracket tournament orchestration ----
+  // NOTE: register() is intentionally single-arg so the postbuild can
+  // auto-invoke it at IIFE scope (assigning __rpc_<name> globals); the
+  // boot info log lives here so we still log on successful mount.
   try {
-    BracketTournaments.register(initializer, logger);
+    BracketTournaments.register(initializer);
+    logger.info("[BracketTournaments] RPCs registered (7)");
   } catch (err: any) {
     logger.error("[BracketTournaments] failed to mount: " + (err && err.message ? err.message : String(err)));
   }

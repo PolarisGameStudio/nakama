@@ -779,7 +779,15 @@ namespace BracketTournaments {
     }
   }
 
-  export function register(initializer: nkruntime.Initializer, logger: nkruntime.Logger): void {
+  // NOTE: The register() signature is intentionally single-arg (initializer only).
+  // The postbuild AST walker rewrites the string-literal registerRpc() calls below
+  // into `__rpc_<name> = <handler>` global assignments, and ALSO auto-invokes any
+  // no-arg-callable register() at IIFE scope. A multi-arg signature (e.g.
+  // `register(initializer, logger)`) makes the postbuild skip the auto-invoke and
+  // the globals stay `undefined` in pooled Goja VMs → RPCs fail at invocation
+  // with "JavaScript runtime function invalid". See QA report on PR #54.
+  // The boot-time info log moved to main.ts (which still has the logger ref).
+  export function register(initializer: nkruntime.Initializer): void {
     initializer.registerRpc("bracket_tournament_create", rpcCreate);
     initializer.registerRpc("bracket_tournament_seed", rpcSeed);
     initializer.registerRpc("bracket_tournament_start", rpcStart);
@@ -787,6 +795,5 @@ namespace BracketTournaments {
     initializer.registerRpc("bracket_tournament_status", rpcStatus);
     initializer.registerRpc("bracket_tournament_list", rpcList);
     initializer.registerRpc("bracket_tournament_cancel", rpcCancel);
-    logger.info("[BracketTournaments] RPCs registered (7)");
   }
 }

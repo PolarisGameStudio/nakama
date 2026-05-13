@@ -1,6 +1,6 @@
 // ============================================================
 // Nakama Runtime Module — Merged by postbuild.js v2
-// Generated: 2026-05-13T22:34:01.364Z
+// Generated: 2026-05-13T22:47:48.143Z
 // RPC Count: 791
 // ============================================================
 
@@ -65701,7 +65701,15 @@ var BracketTournaments;
             return RpcHelpers.errorResponse(err && err.message ? err.message : String(err));
         }
     }
-    function register(initializer, logger) {
+    // NOTE: The register() signature is intentionally single-arg (initializer only).
+    // The postbuild AST walker rewrites the string-literal registerRpc() calls below
+    // into `__rpc_<name> = <handler>` global assignments, and ALSO auto-invokes any
+    // no-arg-callable register() at IIFE scope. A multi-arg signature (e.g.
+    // `register(initializer, logger)`) makes the postbuild skip the auto-invoke and
+    // the globals stay `undefined` in pooled Goja VMs → RPCs fail at invocation
+    // with "JavaScript runtime function invalid". See QA report on PR #54.
+    // The boot-time info log moved to main.ts (which still has the logger ref).
+    function register(initializer) {
         __rpc_bracket_tournament_create = rpcCreate;
         __rpc_bracket_tournament_seed = rpcSeed;
         __rpc_bracket_tournament_start = rpcStart;
@@ -65709,9 +65717,9 @@ var BracketTournaments;
         __rpc_bracket_tournament_status = rpcStatus;
         __rpc_bracket_tournament_list = rpcList;
         __rpc_bracket_tournament_cancel = rpcCancel;
-        logger.info("[BracketTournaments] RPCs registered (7)");
     }
     BracketTournaments.register = register;
+    register();
 })(BracketTournaments || (BracketTournaments = {}));
 function __OriginalInitModule(ctx, logger, nk, initializer) {
     logger.info("========================================");
@@ -65757,8 +65765,12 @@ function __OriginalInitModule(ctx, logger, nk, initializer) {
         logger.error("[MpKernel] failed to mount: " + (err && err.message ? err.message : String(err)));
     }
     // ---- Bracket tournament orchestration ----
+    // NOTE: register() is intentionally single-arg so the postbuild can
+    // auto-invoke it at IIFE scope (assigning __rpc_<name> globals); the
+    // boot info log lives here so we still log on successful mount.
     try {
-        BracketTournaments.register(initializer, logger);
+        BracketTournaments.register(initializer);
+        logger.info("[BracketTournaments] RPCs registered (7)");
     }
     catch (err) {
         logger.error("[BracketTournaments] failed to mount: " + (err && err.message ? err.message : String(err)));

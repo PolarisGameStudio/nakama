@@ -1,5 +1,5 @@
 declare namespace BracketTournaments {
-    function register(initializer: nkruntime.Initializer, logger: nkruntime.Logger): void;
+    function register(initializer: nkruntime.Initializer): void;
 }
 declare function LegacyInitModule(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, initializer: nkruntime.Initializer): void;
 declare var __TS_OWNED_RPCS: {
