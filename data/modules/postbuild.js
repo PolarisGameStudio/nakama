@@ -454,7 +454,7 @@ function autoInvokeRegister(content) {
     var paramList = lastDecl ? lastDecl[1].trim() : '';
     // Auto-invoke is SAFE when:
     //   • The function takes no parameters at all, OR
-    //   • The function takes ONLY `initializer` (single param, any name).
+    //   • The function takes ONLY `initializer`.
     //     This is the classic stub-populator shape: postbuild's earlier
     //     replacement step rewrites every `initializer.registerRpc(...)`
     //     inside the body into `__rpc_X = handler`, so `initializer` is
@@ -469,7 +469,8 @@ function autoInvokeRegister(content) {
     var paramCount = paramList.length === 0
       ? 0
       : paramList.split(',').filter(function(p){ return p.trim().length > 0; }).length;
-    if (paramCount > 1) {
+    var singleParam = paramList.split(',')[0] ? paramList.split(',')[0].trim() : '';
+    if (paramCount > 1 || (paramCount === 1 && singleParam !== 'initializer')) {
       skipped.push(nsName + '(' + paramList + ')');
       continue;
     }
@@ -596,9 +597,76 @@ var aliasOverrideLines = RPC_ALIAS_OVERRIDES.map(function(o) {
   return '  try { if (typeof ' + o.to + ' !== "undefined") { ' + stubVar + ' = ' + o.to + '; } } catch(e) {}';
 }).join('\n');
 
-var registrationLines = rpcEntries.map(function(e) {
+var DIRECT_BRIDGE_RPC_IDS = {
+  mp_create_match: true,
+  mp_read_match_result: true,
+  mp_list_templates: true,
+  mp_agent_spawn: true,
+  mp_agent_despawn: true,
+  mp_agent_list_personas: true,
+  mp_agent_speak: true,
+  quizverse_create_match: true,
+  quizverse_load_pack: true,
+  quizverse_list_packs: true
+};
+
+var registrationLines = rpcEntries.filter(function(e) {
+  return !DIRECT_BRIDGE_RPC_IDS[e.id];
+}).map(function(e) {
   return '  try { initializer.registerRpc("' + e.id + '", ' + e.varName + '); } catch(e) {}';
 }).join('\n');
+
+var quizVerseRegistrationLines = [
+  '  try { initializer.registerRpc("quizverse_create_match", quizverseCreateMatchRpc); } catch(e) {}',
+  '  try { initializer.registerRpc("quizverse_load_pack", quizverseLoadPackRpc); } catch(e) {}',
+  '  try { initializer.registerRpc("quizverse_list_packs", quizverseListPacksRpc); } catch(e) {}'
+].join('\n');
+
+var mpKernelOverrideLines = [
+  '  try { mpPrepareTemplates(logger); } catch(e) { logger.error("[Postbuild] mpPrepareTemplates failed: " + (e && e.message ? e.message : String(e))); }',
+  '  try { initializer.registerRpc("mp_create_match", mpCreateMatchRpc); } catch(e) {}',
+  '  try { initializer.registerRpc("mp_read_match_result", mpReadMatchResultRpc); } catch(e) {}',
+  '  try { initializer.registerRpc("mp_list_templates", mpListTemplatesRpc); } catch(e) {}',
+  '  try { __rpc_mp_create_match = mpCreateMatchRpc; } catch(e) {}',
+  '  try { __rpc_mp_read_match_result = mpReadMatchResultRpc; } catch(e) {}',
+  '  try { __rpc_mp_list_templates = mpListTemplatesRpc; } catch(e) {}'
+].join('\n');
+
+var mpAgentOverrideLines = [
+  '  try { initializer.registerRpc("mp_agent_spawn", mpAgentSpawnRpc); } catch(e) {}',
+  '  try { initializer.registerRpc("mp_agent_despawn", mpAgentDespawnRpc); } catch(e) {}',
+  '  try { initializer.registerRpc("mp_agent_list_personas", mpAgentListPersonasRpc); } catch(e) {}',
+  '  try { initializer.registerRpc("mp_agent_speak", mpAgentSpeakRpc); } catch(e) {}',
+  '  try { __rpc_mp_agent_spawn = mpAgentSpawnRpc; } catch(e) {}',
+  '  try { __rpc_mp_agent_despawn = mpAgentDespawnRpc; } catch(e) {}',
+  '  try { __rpc_mp_agent_list_personas = mpAgentListPersonasRpc; } catch(e) {}',
+  '  try { __rpc_mp_agent_speak = mpAgentSpeakRpc; } catch(e) {}'
+].join('\n');
+
+function matchBridgeRegistration(templateId) {
+  return [
+    '  try { initializer.registerMatch("' + templateId + '", {',
+    '    matchInit,',
+    '    matchJoinAttempt,',
+    '    matchJoin,',
+    '    matchLeave,',
+    '    matchLoop,',
+    '    matchTerminate,',
+    '    matchSignal',
+    '  }); } catch(e) { logger.error("[Postbuild] ' + templateId + ' registerMatch failed: " + (e && e.message ? e.message : String(e))); }'
+  ].join('\n');
+}
+
+var matchRegistrationLines = [
+  matchBridgeRegistration('sync-turn-v1'),
+  matchBridgeRegistration('async-turn-v1'),
+  matchBridgeRegistration('lobby-handoff-v1'),
+  matchBridgeRegistration('tournament-v1'),
+  matchBridgeRegistration('live-event-v1'),
+  matchBridgeRegistration('persistent-party-v1'),
+  matchBridgeRegistration('conversational-party-v1'),
+  matchBridgeRegistration('mixed-reality-anchor-v1')
+].join('\n');
 
 var newInitModule = [
   '',
@@ -606,9 +674,17 @@ var newInitModule = [
   '// Nakama\'s AST walker only finds registerRpc calls that are direct',
   '// statements in InitModule\'s body. This wrapper satisfies that requirement.',
   'function InitModule(ctx, logger, nk, initializer) {',
+  '  // --- MpKernel global handlers for pooled Goja VMs ---',
+  mpKernelOverrideLines,
+  mpAgentOverrideLines,
+  '  // --- Match registration bridge (direct object literals for Nakama AST) ---',
+  matchRegistrationLines,
   '  __OriginalInitModule(ctx, logger, nk, initializer);',
   '  // --- RPC alias overrides (post-Hiro, pre-registration) ---',
   aliasOverrideLines,
+  mpKernelOverrideLines,
+  mpAgentOverrideLines,
+  quizVerseRegistrationLines,
   registrationLines,
   '  logger.info("[Postbuild] Registered " + ' + rpcEntries.length + ' + " RPCs via AST-compatible wrapper (' + RPC_ALIAS_OVERRIDES.length + ' aliases applied)");',
   '}',

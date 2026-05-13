@@ -1,3 +1,6 @@
+declare namespace BracketTournaments {
+    function register(initializer: nkruntime.Initializer, logger: nkruntime.Logger): void;
+}
 declare function LegacyInitModule(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, initializer: nkruntime.Initializer): void;
 declare var __TS_OWNED_RPCS: {
     [id: string]: boolean;
@@ -179,6 +182,9 @@ declare namespace QvPrivacy {
 declare namespace QvProductChangelog {
     var COLLECTION: string;
     var ALLOWED_KINDS: string[];
+    function register(initializer: nkruntime.Initializer): void;
+}
+declare namespace QvKnowledgeBaseTriad {
     function register(initializer: nkruntime.Initializer): void;
 }
 /**
@@ -641,8 +647,15 @@ declare namespace QuizVersePlugin {
     var RPC_CREATE_MATCH: string;
     var RPC_LOAD_PACK: string;
     var RPC_LIST_PACKS: string;
+    function rpcCreateMatch(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
+    function rpcLoadPack(ctx: nkruntime.Context, _logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
+    function rpcListPacks(_ctx: nkruntime.Context, _logger: nkruntime.Logger, nk: nkruntime.Nakama, _payload: string): string;
     function register(initializer: nkruntime.Initializer, nk: nkruntime.Nakama, logger: nkruntime.Logger): void;
+    function prepareGenerators(nk: nkruntime.Nakama, _logger?: nkruntime.Logger): void;
 }
+declare function quizverseCreateMatchRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
+declare function quizverseLoadPackRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
+declare function quizverseListPacksRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
 declare namespace QuizVersePackStore {
     var COLLECTION: string;
     function readPack(nk: nkruntime.Nakama, packId: string): QuizVerseGame.IPack;
@@ -747,6 +760,10 @@ declare namespace HiroAchievements {
     function register(initializer: nkruntime.Initializer): void;
     function registerEventHandlers(): void;
 }
+declare namespace HiroSubAchievements {
+    function reconcile(nk: nkruntime.Nakama, userId: string, gameId?: string): string[];
+    function register(initializer: nkruntime.Initializer): void;
+}
 declare namespace HiroAuctions {
     function getConfig(nk: nkruntime.Nakama): Hiro.AuctionsConfig;
     function register(initializer: nkruntime.Initializer): void;
@@ -802,6 +819,16 @@ declare namespace HiroIncentives {
     function getConfig(nk: nkruntime.Nakama, gameId?: string): Hiro.IncentivesConfig;
     function register(initializer: nkruntime.Initializer): void;
 }
+declare namespace HiroIntegrations {
+    function recordAttribution(nk: nkruntime.Nakama, userId: string, attribution: {
+        channel?: string;
+        campaign?: string;
+        country?: string;
+        mediaSource?: string;
+        raw?: any;
+    }): void;
+    function register(initializer: nkruntime.Initializer): void;
+}
 declare namespace HiroInventory {
     function getConfig(nk: nkruntime.Nakama, gameId?: string): Hiro.InventoryConfig;
     function grantItem(nk: nkruntime.Nakama, logger: nkruntime.Logger, ctx: nkruntime.Context, userId: string, itemId: string, count: number, stringProps?: {
@@ -835,6 +862,27 @@ declare namespace HiroProgression {
     };
     function register(initializer: nkruntime.Initializer): void;
 }
+declare namespace HiroPublishers {
+    interface PublisherDef {
+        id: string;
+        name: string;
+        contactEmail?: string;
+        appKeys?: {
+            [appId: string]: string;
+        };
+        metadata?: {
+            [k: string]: string;
+        };
+        enabled: boolean;
+        createdAt: number;
+        updatedAt: number;
+    }
+    export function get(nk: nkruntime.Nakama, publisherId: string): PublisherDef | null;
+    export function list(nk: nkruntime.Nakama): PublisherDef[];
+    export function isAppOwnedBy(nk: nkruntime.Nakama, publisherId: string, appId: string): boolean;
+    export function register(initializer: nkruntime.Initializer): void;
+    export {};
+}
 declare namespace HiroCreatorEventRewards {
     function createBucketForEvent(nk: nkruntime.Nakama, logger: nkruntime.Logger, eventId: string, prizes: {
         tier: string;
@@ -863,6 +911,9 @@ declare namespace HiroStore {
 declare namespace HiroStreaks {
     function getConfig(nk: nkruntime.Nakama, gameId?: string): Hiro.StreaksConfig;
     function updateStreak(nk: nkruntime.Nakama, logger: nkruntime.Logger, ctx: nkruntime.Context, userId: string, streakId: string, gameId?: string): Hiro.UserStreakState;
+    function register(initializer: nkruntime.Initializer): void;
+}
+declare namespace HiroTeamSubsystems {
     function register(initializer: nkruntime.Initializer): void;
 }
 declare namespace HiroTeams {
@@ -1099,7 +1150,138 @@ declare namespace MpKernelAgent {
         [name: string]: boolean;
     };
     function register(initializer: nkruntime.Initializer, logger: nkruntime.Logger): void;
+    function rpcAgentSpawn(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
+    function rpcAgentDespawn(ctx: nkruntime.Context, _logger: nkruntime.Logger, _nk: nkruntime.Nakama, payload: string): string;
+    function rpcListPersonas(_ctx: nkruntime.Context, _logger: nkruntime.Logger, _nk: nkruntime.Nakama, _payload: string): string;
+    function rpcAgentSpeak(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
 }
+declare function mpAgentSpawnRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
+declare function mpAgentDespawnRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
+declare function mpAgentListPersonasRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
+declare function mpAgentSpeakRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
+declare function __mpTemplateIdFromParams(params: {
+    [key: string]: any;
+}): string;
+declare function __mpMatchInit(templateId: string, ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, params: {
+    [key: string]: any;
+}): {
+    state: MpKernelMatch.IKernelState<any>;
+    tickRate: number;
+    label: string;
+};
+declare function __mpMatchJoinAttempt(templateId: string, ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presence: nkruntime.Presence, metadata: {
+    [key: string]: string;
+}): {
+    state: MpKernelMatch.IKernelState<any>;
+    accept: boolean;
+    rejectMessage?: string;
+};
+declare function __mpMatchJoin(templateId: string, ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presences: nkruntime.Presence[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpMatchLeave(templateId: string, ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presences: nkruntime.Presence[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpMatchLoop(templateId: string, ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, messages: nkruntime.MatchMessage[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpMatchTerminate(templateId: string, ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, graceSeconds: number): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpMatchSignal(templateId: string, ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, data: string): {
+    state: MpKernelMatch.IKernelState<any>;
+    data?: string;
+};
+declare function matchInit(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, params: {
+    [key: string]: any;
+}): {
+    state: MpKernelMatch.IKernelState<any>;
+    tickRate: number;
+    label: string;
+};
+declare function matchJoinAttempt(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presence: nkruntime.Presence, metadata: {
+    [key: string]: string;
+}): {
+    state: MpKernelMatch.IKernelState<any>;
+    accept: boolean;
+    rejectMessage?: string;
+};
+declare function matchJoin(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presences: nkruntime.Presence[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function matchLeave(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presences: nkruntime.Presence[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function matchLoop(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, messages: nkruntime.MatchMessage[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function matchTerminate(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, graceSeconds: number): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function matchSignal(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, data: string): {
+    state: MpKernelMatch.IKernelState<any>;
+    data?: string;
+};
+declare function __mpSyncTurnMatchInit(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, params: {
+    [key: string]: any;
+}): {
+    state: MpKernelMatch.IKernelState<any>;
+    tickRate: number;
+    label: string;
+};
+declare function __mpSyncTurnMatchJoinAttempt(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presence: nkruntime.Presence, metadata: {
+    [key: string]: string;
+}): {
+    state: MpKernelMatch.IKernelState<any>;
+    accept: boolean;
+    rejectMessage?: string;
+};
+declare function __mpSyncTurnMatchJoin(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presences: nkruntime.Presence[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpSyncTurnMatchLeave(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presences: nkruntime.Presence[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpSyncTurnMatchLoop(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, messages: nkruntime.MatchMessage[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpSyncTurnMatchTerminate(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, graceSeconds: number): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpSyncTurnMatchSignal(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, data: string): {
+    state: MpKernelMatch.IKernelState<any>;
+    data?: string;
+};
+declare function __mpAsyncTurnMatchInit(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, params: {
+    [key: string]: any;
+}): {
+    state: MpKernelMatch.IKernelState<any>;
+    tickRate: number;
+    label: string;
+};
+declare function __mpAsyncTurnMatchJoinAttempt(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presence: nkruntime.Presence, metadata: {
+    [key: string]: string;
+}): {
+    state: MpKernelMatch.IKernelState<any>;
+    accept: boolean;
+    rejectMessage?: string;
+};
+declare function __mpAsyncTurnMatchJoin(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presences: nkruntime.Presence[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpAsyncTurnMatchLeave(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, presences: nkruntime.Presence[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpAsyncTurnMatchLoop(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, messages: nkruntime.MatchMessage[]): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpAsyncTurnMatchTerminate(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, graceSeconds: number): {
+    state: MpKernelMatch.IKernelState<any>;
+};
+declare function __mpAsyncTurnMatchSignal(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, dispatcher: nkruntime.MatchDispatcher, tick: number, state: any, data: string): {
+    state: MpKernelMatch.IKernelState<any>;
+    data?: string;
+};
 declare namespace MpKernelClock {
     interface IMatchClock {
         matchStartUnixMs: number;
@@ -1191,8 +1373,13 @@ declare namespace MpKernelModule {
     function rpcCreateMatch(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
     function rpcReadMatchResult(_ctx: nkruntime.Context, _logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
     function rpcListTemplates(_ctx: nkruntime.Context, _logger: nkruntime.Logger, _nk: nkruntime.Nakama, _payload: string): string;
+    function prepareTemplates(logger?: nkruntime.Logger): void;
     function register(initializer: nkruntime.Initializer, logger: nkruntime.Logger): void;
 }
+declare function mpPrepareTemplates(logger?: nkruntime.Logger): void;
+declare function mpCreateMatchRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
+declare function mpReadMatchResultRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
+declare function mpListTemplatesRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
 declare namespace MpKernelInterest {
     interface IMatchCfg {
         cellMeters: number;
@@ -1254,7 +1441,8 @@ declare namespace MpKernelMatch {
     }
     function broadcastKernel<P>(state: IKernelState<any>, dispatcher: nkruntime.MatchDispatcher, matchId: string, op: number, payload: P, targets: nkruntime.Presence[] | null, senderUserId?: string): void;
     function makeHandler<TS>(template: MpKernel.IMatchTemplate<TS>): nkruntime.MatchHandler<IKernelState<TS>>;
-    function registerTemplate<TS>(initializer: nkruntime.Initializer, template: MpKernel.IMatchTemplate<TS>, logger: nkruntime.Logger): void;
+    function registerTemplate<TS>(_initializer: nkruntime.Initializer, template: MpKernel.IMatchTemplate<TS>, logger: nkruntime.Logger): void;
+    function handlerFor(templateId: string): nkruntime.MatchHandler<IKernelState<any>>;
 }
 declare namespace MpKernelMatchResult {
     var COLLECTION: string;
@@ -2585,7 +2773,7 @@ declare namespace AnalyticsAlerts {
         max: number;
     };
     function postSummaryForSlot(nk: nkruntime.Nakama, logger: nkruntime.Logger, slotStartMs: number): boolean;
-    function runSchedulerTick(nk: nkruntime.Nakama, logger: nkruntime.Logger): {
+    function runSchedulerTick(nk: nkruntime.Nakama, logger: nkruntime.Logger, ctx?: nkruntime.Context): {
         posted: boolean;
         reason: string;
         slotIso?: string;
@@ -2597,6 +2785,40 @@ declare namespace SatoriAudiences {
     function isInAudience(nk: nkruntime.Nakama, userId: string, audienceId: string, gameId?: string): boolean;
     function getExplicitIncludeIds(nk: nkruntime.Nakama, audienceId: string, gameId?: string): string[];
     function register(initializer: nkruntime.Initializer): void;
+}
+declare namespace SatoriManagedAudiences {
+    function refreshSource(nk: nkruntime.Nakama, logger: nkruntime.Logger, sourceId: string, gameId?: string): {
+        ok: boolean;
+        rowCount: number;
+    };
+    function refreshAllDue(nk: nkruntime.Nakama, logger: nkruntime.Logger, gameId?: string): {
+        refreshed: number;
+    };
+    function register(initializer: nkruntime.Initializer): void;
+}
+declare namespace SatoriAudienceRecompute {
+    function fullRecompute(nk: nkruntime.Nakama, logger: nkruntime.Logger, gameId?: string): {
+        audiences: number;
+        users: number;
+    };
+    function markUserDirty(nk: nkruntime.Nakama, userId: string, gameId?: string): void;
+    function tickIfDue(nk: nkruntime.Nakama, logger: nkruntime.Logger, gameId?: string): boolean;
+    function register(initializer: nkruntime.Initializer): void;
+}
+declare namespace SatoriCategoryLabels {
+    type LabelTarget = "flag" | "live_event" | "message" | "experiment" | "audience";
+    interface LabelDef {
+        id: string;
+        name: string;
+        color?: string;
+        description?: string;
+        createdAt: number;
+        updatedAt: number;
+    }
+    export function labelsForEntity(nk: nkruntime.Nakama, target: LabelTarget, entityId: string, gameId?: string): LabelDef[];
+    export function entitiesForLabel(nk: nkruntime.Nakama, target: LabelTarget, labelId: string, gameId?: string): string[];
+    export function register(initializer: nkruntime.Initializer): void;
+    export {};
 }
 declare namespace SatoriDataLake {
     function exportBatch(nk: nkruntime.Nakama, logger: nkruntime.Logger, events: any[]): void;
@@ -2611,10 +2833,51 @@ declare namespace SatoriExperiments {
     function getVariant(nk: nkruntime.Nakama, userId: string, experimentId: string, gameId?: string): Satori.ExperimentVariant | null;
     function register(initializer: nkruntime.Initializer): void;
 }
+declare namespace SatoriExperimentPhases {
+    function register(initializer: nkruntime.Initializer): void;
+}
 declare namespace SatoriFeatureFlags {
     function getFlag(nk: nkruntime.Nakama, userId: string, flagName: string, defaultValue?: string, gameId?: string): Satori.Flag;
     function getAllFlags(nk: nkruntime.Nakama, userId: string, gameId?: string): Satori.Flag[];
     function register(initializer: nkruntime.Initializer): void;
+}
+declare namespace SatoriFunnelAnalysis {
+    interface FunnelStep {
+        name: string;
+        eventName: string;
+        metadataMatches?: {
+            [key: string]: string;
+        };
+    }
+    interface FunnelDef {
+        id: string;
+        name: string;
+        description?: string;
+        steps: FunnelStep[];
+        audienceId?: string;
+        timeWindowSec?: number;
+        createdAt: number;
+        updatedAt: number;
+    }
+    interface StepResult {
+        name: string;
+        eventName: string;
+        count: number;
+        conversionFromPreviousPct: number;
+        conversionFromStartPct: number;
+    }
+    interface FunnelReport {
+        funnelId: string;
+        funnelName: string;
+        rangeStartMs: number;
+        rangeEndMs: number;
+        totalUsersEntered: number;
+        steps: StepResult[];
+        dropoffStepIndex: number;
+    }
+    export function runFunnel(nk: nkruntime.Nakama, funnel: FunnelDef, fromMs: number, toMs: number): FunnelReport;
+    export function register(initializer: nkruntime.Initializer): void;
+    export {};
 }
 declare namespace SatoriIdentities {
     function onEvent(nk: nkruntime.Nakama, logger: nkruntime.Logger, userId: string, event: Satori.CapturedEvent): void;
@@ -2634,12 +2897,70 @@ declare namespace SatoriMessages {
     function processScheduledMessages(nk: nkruntime.Nakama, logger: nkruntime.Logger, gameId?: string): void;
     function register(initializer: nkruntime.Initializer): void;
 }
+declare namespace SatoriMessagingIntegrations {
+    function dispatch(nk: nkruntime.Nakama, logger: nkruntime.Logger, userId: string, title: string, body: string, channel: string, data?: any, gameId?: string): number;
+    function register(initializer: nkruntime.Initializer): void;
+}
 declare namespace SatoriMetrics {
     function processEvent(nk: nkruntime.Nakama, logger: nkruntime.Logger, userId: string, eventName: string, metadata: {
         [key: string]: string;
     }): void;
     function register(initializer: nkruntime.Initializer): void;
     function registerEventHandlers(): void;
+}
+declare namespace SatoriRetention {
+    interface CohortBucket {
+        cohortDate: string;
+        cohortSize: number;
+        retained: {
+            [bucket: number]: number;
+        };
+        retainedPct: {
+            [bucket: number]: number;
+        };
+    }
+    interface RetentionReport {
+        rangeStartMs: number;
+        rangeEndMs: number;
+        activeEventNames: string[];
+        buckets: number[];
+        cohorts: CohortBucket[];
+        overallByBucket: {
+            bucket: number;
+            users: number;
+            pct: number;
+        }[];
+    }
+    export function runReport(nk: nkruntime.Nakama, fromMs: number, toMs: number, gameId?: string): RetentionReport;
+    export function register(initializer: nkruntime.Initializer): void;
+    export {};
+}
+declare namespace SatoriRoAS {
+    interface RoASBucket {
+        channel: string;
+        campaign?: string;
+        country?: string;
+        cohortDate?: string;
+        spendUsd: number;
+        revenueUsd: number;
+        roasPct: number;
+        payerCount: number;
+    }
+    interface RoASReport {
+        rangeStartMs: number;
+        rangeEndMs: number;
+        totalSpendUsd: number;
+        totalRevenueUsd: number;
+        roasPctOverall: number;
+        buckets: RoASBucket[];
+    }
+    export function runReport(nk: nkruntime.Nakama, fromMs: number, toMs: number, groupBy: string[], gameId?: string): RoASReport;
+    export function register(initializer: nkruntime.Initializer): void;
+    export {};
+}
+declare namespace SatoriSessions {
+    function onEvent(nk: nkruntime.Nakama, logger: nkruntime.Logger, userId: string, eventName: string, eventTimestampMs: number, gameId?: string): void;
+    function register(initializer: nkruntime.Initializer): void;
 }
 declare namespace SatoriTaxonomy {
     interface ValidationResult {
@@ -2716,6 +3037,7 @@ declare namespace Constants {
     const MISSIONS_COLLECTION = "missions";
     const QUIZ_RESULTS_COLLECTION = "quiz_results";
     const GAME_REGISTRY_COLLECTION = "game_registry";
+    const BRACKET_TOURNAMENTS_COLLECTION = "bracket_tournaments";
     const ANALYTICS_COLLECTION = "analytics_events";
     const ANALYTICS_ERRORS_COLLECTION = "analytics_error_events";
     const ADMIN_AUDIT_COLLECTION = "admin_audit_events";
