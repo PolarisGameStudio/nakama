@@ -13,9 +13,9 @@
 #      github.com/prometheus/client_model/go"
 #
 # Fix:
-#   1. Use the EXACT same base image as build/pluginbuilder/Dockerfile
-#      (golang:1.25.5-bookworm). go.mod pins `go 1.25.5`, plugin builder uses
-#      1.25.5-bookworm, this Dockerfile uses 1.25.5-bookworm. One toolchain.
+#   1. Use the exact Go toolchain required by go.mod so the server and
+#      Go plugins compile against one runtime. When upstream bumps go.mod,
+#      this ARG must move with it.
 #   2. Build server AND plugins in this single Dockerfile, sharing the same
 #      module cache (`go mod download` happens once in `gomod` stage). That
 #      guarantees plugins and server resolve every dep — including
@@ -30,7 +30,7 @@
 # Layer cache note: heavy go-mod download is isolated so source edits don't
 # bust the dep cache.
 
-ARG GO_VERSION=1.25.5
+ARG GO_VERSION=1.26.1
 ARG NODE_VERSION=18
 
 # ---------------------------------------------------------------------------

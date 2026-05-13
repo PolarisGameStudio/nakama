@@ -51,6 +51,13 @@ function InitModule(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkrunt
     logger.error("[MpKernel] failed to mount: " + (err && err.message ? err.message : String(err)));
   }
 
+  // ---- Bracket tournament orchestration ----
+  try {
+    BracketTournaments.register(initializer, logger);
+  } catch (err: any) {
+    logger.error("[BracketTournaments] failed to mount: " + (err && err.message ? err.message : String(err)));
+  }
+
   // ---- Game plugins on top of MpKernel ----
   // QuizVerse runs on SyncTurnMatch (turn template registered above).
   // Mounted AFTER the kernel so the SyncTurn generator registry exists,
@@ -127,6 +134,11 @@ function InitModule(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkrunt
     // Voice / Fortune / Tutor / Chat) can inject mode-specific addenda.
     logger.info("[QvPersonalization] Registering personalization_get + personalization_get_for_mode RPCs...");
     QvPersonalization.register(initializer);
+
+    // QuizVerse KB Triad: User KB + Game KB + Exam KB grounding for ChatBox,
+    // AI Host, Fortune Teller, score prediction, citations, and repeat policy.
+    logger.info("[QvKnowledgeBaseTriad] Registering KB triad RPCs...");
+    QvKnowledgeBaseTriad.register(initializer);
 
     // Phase 7 (qv-insights-loop): privacy + consent forwarder RPCs. Admin-only;
     // bound to Nakama account-deletion webhook + the SDK consent-set RPC.
@@ -265,6 +277,21 @@ function InitModule(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkrunt
     logger.info("[Hiro] Registering Leaderboards RPCs...");
     HiroLeaderboards.register(initializer);
 
+    // ---- New 2026-05 gap-fill modules (Heroic Labs Hiro doc parity) ----
+    // Mounted inside the same try-block so a single broken module surfaces
+    // a single error log; the established Hiro modules still finish booting.
+    logger.info("[Hiro] Registering Publishers RPCs...");
+    HiroPublishers.register(initializer);
+
+    logger.info("[Hiro] Registering Integrations (Facebook/AppsFlyer/etc) RPCs...");
+    HiroIntegrations.register(initializer);
+
+    logger.info("[Hiro] Registering Sub-Achievements RPCs...");
+    HiroSubAchievements.register(initializer);
+
+    logger.info("[Hiro] Registering Team Subsystems (Inventory/Mailbox/Store/Gifts/EventLB) RPCs...");
+    HiroTeamSubsystems.register(initializer);
+
     logger.info("[Hiro] All Hiro systems registered successfully");
   } catch (err: any) {
     logger.error("[Hiro] Failed to register Hiro systems: " + (err.message || String(err)));
@@ -310,6 +337,37 @@ function InitModule(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkrunt
 
     logger.info("[Satori] Registering Data Lake RPCs...");
     SatoriDataLake.register(initializer);
+
+    // ---- New 2026-05 gap-fill modules (Heroic Labs Satori doc parity) ----
+    // Each new module is mounted independently so that a registration
+    // failure in one (e.g. category labels) doesn't abort the rest of the
+    // Satori bring-up.
+    logger.info("[Satori] Registering Category Labels RPCs...");
+    SatoriCategoryLabels.register(initializer);
+
+    logger.info("[Satori] Registering Funnel Analysis RPCs...");
+    SatoriFunnelAnalysis.register(initializer);
+
+    logger.info("[Satori] Registering Retention Analytics RPCs...");
+    SatoriRetention.register(initializer);
+
+    logger.info("[Satori] Registering RoAS Analytics RPCs...");
+    SatoriRoAS.register(initializer);
+
+    logger.info("[Satori] Registering Sessions Analytics RPCs...");
+    SatoriSessions.register(initializer);
+
+    logger.info("[Satori] Registering Messaging Integrations (FCM/APNS/OneSignal/FB A2U) RPCs...");
+    SatoriMessagingIntegrations.register(initializer);
+
+    logger.info("[Satori] Registering Managed Audiences (BYO segment imports) RPCs...");
+    SatoriManagedAudiences.register(initializer);
+
+    logger.info("[Satori] Registering Audience Recompute Scheduler RPCs...");
+    SatoriAudienceRecompute.register(initializer);
+
+    logger.info("[Satori] Registering Experiment Phases RPCs...");
+    SatoriExperimentPhases.register(initializer);
 
     logger.info("[Satori] All Satori systems registered successfully");
   } catch (err: any) {

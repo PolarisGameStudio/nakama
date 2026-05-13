@@ -92,6 +92,7 @@ assert_known_rpc_registered() {
                 "${URL}/v2/rpc/${RPC_ID}?http_key=${KEY}" -d '""' 2>&1) || true
     case "$CODE" in
         404) fail "$RPC_ID returned 404 — RPC not registered (JS bundle didn't load)" ;;
+        500) fail "$RPC_ID returned 500 — RPC registered but handler failed at runtime" ;;
         200|400|401|403) ok "$RPC_ID is registered (HTTP $CODE)" ;;
         *)   echo "  ⚠ $RPC_ID unexpected HTTP $CODE — treating as registered" ;;
     esac
@@ -183,6 +184,10 @@ EOF
         assert_logs_clean "$LOGS"
         assert_health_rpc "http://127.0.0.1:57350" "defaultkey"
         assert_known_rpc_registered "http://127.0.0.1:57350" "defaultkey" "wallet_get_all"
+        assert_known_rpc_registered "http://127.0.0.1:57350" "defaultkey" "mp_create_match"
+        assert_known_rpc_registered "http://127.0.0.1:57350" "defaultkey" "mp_list_templates"
+        assert_known_rpc_registered "http://127.0.0.1:57350" "defaultkey" "quizverse_list_packs"
+        assert_known_rpc_registered "http://127.0.0.1:57350" "defaultkey" "quizverse_create_match"
         echo
         ok "image $IMAGE: JS runtime healthy"
         ;;
@@ -279,6 +284,20 @@ EOF
                 *) echo '✓ wallet_get_all registered (HTTP '\"\$CODE\"')' ;;
             esac
         " || fail "in-pod wallet_get_all probe failed"
+
+        kubectl exec -n "$NS" "$POD" -- /bin/sh -c "
+            set -eu
+            for RPC_ID in mp_create_match mp_list_templates quizverse_list_packs quizverse_create_match; do
+                CODE=\$(curl -s -o /tmp/\${RPC_ID}.json -w '%{http_code}' -X POST \
+                      -H 'Content-Type: application/json' \
+                      'http://127.0.0.1:7350/v2/rpc/'\"\${RPC_ID}\"'?http_key=${HTTP_KEY}' -d '\"\"')
+                case \"\$CODE\" in
+                    404) echo '✗ '\"\$RPC_ID\"' 404 — MpKernel/QuizVerse registration missing'; cat /tmp/\${RPC_ID}.json; exit 1 ;;
+                    500) echo '✗ '\"\$RPC_ID\"' 500 — handler failed at runtime'; cat /tmp/\${RPC_ID}.json; exit 1 ;;
+                    *) echo '✓ '\"\$RPC_ID\"' registered (HTTP '\"\$CODE\"')' ;;
+                esac
+            done
+        " || fail "in-pod MpKernel/QuizVerse probe failed"
 
         ok "cluster $NS/$DEPLOY: JS runtime healthy"
         ;;

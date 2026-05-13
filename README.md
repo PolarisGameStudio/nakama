@@ -38,6 +38,8 @@ Nakama's JavaScript runtime only supports **ES Modules (ESM)**:
 - 📖 **[NAKAMA_COMPLETE_DOCUMENTATION.md](./NAKAMA_COMPLETE_DOCUMENTATION.md)** - Master documentation
 - 🎮 **[GAME_ONBOARDING_GUIDE.md](./GAME_ONBOARDING_GUIDE.md)** - Add new games
 - 🎯 **[UNITY_DEVELOPER_COMPLETE_GUIDE.md](./UNITY_DEVELOPER_COMPLETE_GUIDE.md)** - Unity integration
+- 🤖 **[Agent & Multiplayer Developer Coverage](./docs/AGENT_MULTIPLAYER_DEVELOPER_COVERAGE.md)** - Agent skills, avatar interaction, platform coverage, multiplayer QA, and known gaps
+- 🧩 **[Agent Skills Integration Playbook](./docs/AGENT_SKILLS_INTEGRATION_PLAYBOOK.md)** - Add Agent Skills across IDEs, SDKs, platforms, languages, and demo UIs
 
 **All documentation has been consolidated. See [DOCS_INDEX.md](./DOCS_INDEX.md) for the complete list.**
 

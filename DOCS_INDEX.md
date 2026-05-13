@@ -15,6 +15,8 @@
 | **NAKAMA_COMPLETE_DOCUMENTATION.md** | Master documentation index for all Nakama features | All developers | ✅ Active |
 | **GAME_ONBOARDING_GUIDE.md** | How to add new games to the platform | Game integrators, backend devs | ✅ Active |
 | **UNITY_DEVELOPER_COMPLETE_GUIDE.md** | Complete Unity integration guide (3360 lines) | Unity developers | ✅ Active |
+| **docs/AGENT_MULTIPLAYER_DEVELOPER_COVERAGE.md** | Agent, avatar, platform, QA, and multiplayer coverage/gaps | Game developers, SDK authors, QA | ✅ Active |
+| **docs/AGENT_SKILLS_INTEGRATION_PLAYBOOK.md** | Process for adding Agent Skills across IDEs, SDKs, platforms, and demo UIs | SDK authors, game teams, QA | ✅ Active |
 
 ### Feature-Specific Documentation
 
@@ -25,9 +27,12 @@ Located in `docs/`:
 | **COMPLETE_RPC_REFERENCE.md** | All 123+ RPC endpoints with examples | Backend developers | ✅ Active |
 | **RPC_DOCUMENTATION.md** | RPC implementation patterns | Backend developers | ✅ Active |
 | **DOCUMENTATION_SUMMARY.md** | Documentation organization overview | All contributors | ✅ Active |
+| **SATORI_HIRO_PARITY_2026-05-08.md** | Coverage matrix of every Heroic Labs Satori + Hiro feature against this repo, with end-to-end verification trail (Firecrawl crawl → new modules → console verification) | Backend developers, LiveOps | ✅ Active |
 | **identity.md** | Identity system and AWS Cognito integration | Backend developers | ✅ Active |
 | **wallets.md** | Wallet system implementation details | Backend developers | ✅ Active |
 | **leaderboards.md** | Leaderboard system implementation | Backend developers | ✅ Active |
+| **AGENT_MULTIPLAYER_DEVELOPER_COVERAGE.md** | Agent skills, avatar interaction, multiplayer templates, platform coverage, and known gaps | Game developers, SDK authors, QA | ✅ Active |
+| **AGENT_SKILLS_INTEGRATION_PLAYBOOK.md** | Cross-platform Agent Skills adapter process, demo UI requirements, and sign-off gates | SDK authors, game teams, QA | ✅ Active |
 | **unity/Unity-Quick-Start.md** | Unity quick start guide | Unity developers | ✅ Active |
 | **api/README.md** | API structure overview | API consumers | ✅ Active |
 | **sample-game/README.md** | Sample game integration example | Game developers | ✅ Active |
@@ -108,6 +113,12 @@ Located in `_archived_docs/feature_fixes/`:
 **Integrate a new game:**
 → Read `GAME_ONBOARDING_GUIDE.md`
 
+**Build multiplayer, agent, avatar, lobby, or XR experiences:**
+→ Read `docs/AGENT_MULTIPLAYER_DEVELOPER_COVERAGE.md` → `data/modules/src/multiplayer-kernel/README.md`
+
+**Add Agent Skills to an existing IDE, SDK, platform, or language:**
+→ Read `docs/AGENT_SKILLS_INTEGRATION_PLAYBOOK.md`
+
 **Develop Unity integration:**
 → Read `UNITY_DEVELOPER_COMPLETE_GUIDE.md`
 
@@ -138,6 +149,8 @@ Located in `_archived_docs/feature_fixes/`:
 - NAKAMA_COMPLETE_DOCUMENTATION.md
 - GAME_ONBOARDING_GUIDE.md
 - UNITY_DEVELOPER_COMPLETE_GUIDE.md
+- docs/AGENT_MULTIPLAYER_DEVELOPER_COVERAGE.md
+- docs/AGENT_SKILLS_INTEGRATION_PLAYBOOK.md
 - docs/COMPLETE_RPC_REFERENCE.md
 - docs/RPC_DOCUMENTATION.md
 - docs/identity.md

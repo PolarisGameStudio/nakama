@@ -96,12 +96,13 @@ namespace QuizVersePlugin {
   // sets generator_id from QuizVerse mode, and pre-fills sane defaults.
   // Adapters MAY still call mp_create_match directly; this exists for
   // discoverability and to centralise QuizVerse validation logic.
-  function rpcCreateMatch(
+  export function rpcCreateMatch(
     ctx: nkruntime.Context,
     logger: nkruntime.Logger,
     nk: nkruntime.Nakama,
     payload: string
   ): string {
+    prepareGenerators(nk, logger);
     var raw: any;
     try { raw = JSON.parse(payload || "{}"); }
     catch (_e) { throw nakamaError("bad json", nkruntime.Codes.INVALID_ARGUMENT); }
@@ -119,7 +120,9 @@ namespace QuizVersePlugin {
 
     // Build the kernel template_init. The SyncTurn template merges this
     // over its DefaultInit, so we only override what we need.
-    var maxPlayers = 5;       // Classic default
+    // 0 = unlimited. Specific modes or client payloads can still request
+    // finite caps when the gameplay design needs fixed teams.
+    var maxPlayers = 0;
     var minPlayers = 2;
     if (init.mode === QuizVerseGame.Mode.LINK_AND_PLAY) {
       maxPlayers = 2; minPlayers = 2;
@@ -127,6 +130,12 @@ namespace QuizVersePlugin {
       var bm = (init.battle && init.battle.mode) || QuizVerseGame.BattleMode.ONE_VS_ONE;
       maxPlayers = QuizVerseGame.maxPlayersForMode(bm);
       minPlayers = maxPlayers; // Friend-Battle: must be full to start
+    }
+    if (typeof raw.max_players === "number" && raw.max_players >= 0) {
+      maxPlayers = raw.max_players;
+    }
+    if (typeof raw.min_players === "number" && raw.min_players >= 1) {
+      minPlayers = raw.min_players;
     }
 
     var templateInit: any = {
@@ -150,6 +159,7 @@ namespace QuizVersePlugin {
     var matchId: string;
     try {
       matchId = nk.matchCreate(MpKernelModule.TEMPLATE_IDS.SYNC_TURN_V1, {
+        template_id: MpKernelModule.TEMPLATE_IDS.SYNC_TURN_V1,
         game_id: "quizverse",
         region: raw.region || "",
         template_init: templateInit,
@@ -179,7 +189,7 @@ namespace QuizVersePlugin {
   // this is invoked by the CMS sync job in `web/packages/admin/...`,
   // gated behind admin role. Plain users cannot invoke (we check
   // ctx.userId is present and matches the SYSTEM_USER_ID env).
-  function rpcLoadPack(
+  export function rpcLoadPack(
     ctx: nkruntime.Context,
     _logger: nkruntime.Logger,
     nk: nkruntime.Nakama,
@@ -214,13 +224,13 @@ namespace QuizVersePlugin {
 
   // List currently-stored packs. Public read so adapters can show a
   // pack-picker UI without an admin token.
-  function rpcListPacks(
+  export function rpcListPacks(
     _ctx: nkruntime.Context,
     _logger: nkruntime.Logger,
     nk: nkruntime.Nakama,
     _payload: string
   ): string {
-    var page = nk.storageList("", QuizVersePackStore.COLLECTION, 100);
+    var page = nk.storageList(Constants.SYSTEM_USER_ID, QuizVersePackStore.COLLECTION, 100, "");
     var out: Array<{ pack_id: string; questions: number; revision: number; locale: string }> = [];
     if (page && page.objects) {
       for (var i = 0; i < page.objects.length; i++) {
@@ -256,14 +266,30 @@ namespace QuizVersePlugin {
     nk: nkruntime.Nakama,
     logger: nkruntime.Logger
   ): void {
+    prepareGenerators(nk, logger);
+    initializer.registerRpc(RPC_CREATE_MATCH, rpcCreateMatch);
+    initializer.registerRpc(RPC_LOAD_PACK,    rpcLoadPack);
+    initializer.registerRpc(RPC_LIST_PACKS,   rpcListPacks);
+    logger.info("[QuizVerse] plugin registered; modes=classic|friend_battle|link_and_play");
+  }
+
+  export function prepareGenerators(nk: nkruntime.Nakama, _logger?: nkruntime.Logger): void {
     QuizVerseGenerator.registerNk(nk);
     var gens = QuizVerseGenerator.buildAll();
     for (var i = 0; i < gens.length; i++) {
       MpKernelSyncTurn.registerGenerator(gens[i]);
     }
-    initializer.registerRpc(RPC_CREATE_MATCH, rpcCreateMatch);
-    initializer.registerRpc(RPC_LOAD_PACK,    rpcLoadPack);
-    initializer.registerRpc(RPC_LIST_PACKS,   rpcListPacks);
-    logger.info("[QuizVerse] plugin registered; generators=" + gens.length + " modes=classic|friend_battle|link_and_play");
   }
+}
+
+function quizverseCreateMatchRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+  return QuizVersePlugin.rpcCreateMatch(ctx, logger, nk, payload);
+}
+
+function quizverseLoadPackRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+  return QuizVersePlugin.rpcLoadPack(ctx, logger, nk, payload);
+}
+
+function quizverseListPacksRpc(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string {
+  return QuizVersePlugin.rpcListPacks(ctx, logger, nk, payload);
 }

@@ -67,11 +67,50 @@ If any of the four legs (smartlink → Postgres, smartlink → Nakama, qr-studio
 | `gameId` | `quizverse` | `qr_codes.gameId` — the **one column** that ties scans into Nakama Console |
 | Public URL | `https://dl.intelli-verse-x.ai/quizverse` | Encoded in the PNG/SVG matrix |
 | Landing | `https://qrstudio.intelli-verse-x.ai/l/quizverse` | Used when `qr_codes.landingPageId` is set + published |
-| iOS target | `https://apps.apple.com/us/app/quizverse/id6752571885?uo=4` | `qr_codes.payloadJson.ios` |
-| Android target | Play Store URL | `qr_codes.payloadJson.android` |
+| iOS target | `https://apps.apple.com/us/app/quizverse/id6752571885?uo=4` | `qr_codes.payloadJson.ios` (canonical storefront URL without tracking: `https://apps.apple.com/us/app/quizverse/id6752571885`) |
+| Android target | `https://play.google.com/store/apps/details?id=com.intelliverse.quizverse` | `qr_codes.payloadJson.android` |
 | Web fallback | quizverse landing page | `qr_codes.payloadJson.web` |
-| PNG asset | `s3://intelli-verse-x-media/qr/<tenant>/<id>.png` | `qr_codes.imagePngS3Key` (presigned URL via dashboard) |
-| SVG asset | `s3://intelli-verse-x-media/qr/<tenant>/<id>.svg` | `qr_codes.imageSvgS3Key` |
+| PNG asset — **public HTTPS** | `https://intelli-verse-x-media.s3.us-east-1.amazonaws.com/qr-studio/qrs/intelliverse/quizverse.png` | Object key `qr-studio/qrs/intelliverse/quizverse.png` (`qr_codes.imagePngS3Key`; bucket `intelli-verse-x-media`, region `us-east-1`) |
+| PNG alias — **same matrix** (duplicate key) | `https://intelli-verse-x-media.s3.us-east-1.amazonaws.com/qr-studio/qrs/quizverse/quizverse_canonical_v2.png` | Same bytes as tenant-scoped PNG; use either URL for decks / embeds |
+| SVG asset — **public HTTPS** | `https://intelli-verse-x-media.s3.us-east-1.amazonaws.com/qr-studio/qrs/intelliverse/quizverse.svg` | Object key `qr-studio/qrs/intelliverse/quizverse.svg` (`qr_codes.imageSvgS3Key`) |
+| S3 layout note | Prefix `qr-studio/` + `qrs/<tenantSlug>/<slug>.{png,svg}` | Matches qr-studio `S3_PUBLIC_PREFIX` + upload path (not legacy `qr/<tenant>/<uuid>` placeholders) |
+
+### 1.1 Geographic enrichment — scan GEO (country / city)
+
+Every successful scan records **geographic context** from the client IP on the smartlink tier:
+
+| Concern | Detail |
+|---|---|
+| Mechanism | **geoip-lite** (embedded MaxMind data) in `services/smartlink/src/lib/geoip.ts`; `trustProxy: true` so the ALB client IP is correct |
+| Persisted columns | `scans.ipCountry`, `scans.ipCity` (plus UA-derived platform / OS / browser) |
+| Platform branch | Same scan pipeline whether smartlink `302`s to **App Store**, **Play Store**, or **web** — UA picks the branch; geo enrichment runs **before** the redirect |
+| Satori metadata | `qr.scan` events include `country`, `city`, `region` where resolvable |
+| Dashboards | qr-studio `/v1/analytics/countries`, `/cities`, CSV export |
+
+Empty city for some IPs is expected (e.g. anycast). Troubleshooting: §5.
+
+### 1.2 Answer-engine / collateral GEO (campaigns & LLM-visible surfaces)
+
+For **Generative Engine Optimisation** (answer engines), press kits, or partner pages:
+
+- **Canonical destination URL** (encoded in the QR matrix): `https://dl.intelli-verse-x.ai/quizverse` — always use this slug (`quizverse`, no hyphen). Do **not** use `qr.intelli-verse-x.ai` (dashboard host) or invented paths like `/quiz-verse` unless a separate QR row exists in Postgres.
+- **Raster QR image** for slide decks, PDFs, or `<img src>`: use the **public PNG URLs** in the table above (HTTPS on the `intelli-verse-x-media` bucket).
+- **Native install URLs** (App Store + Play) for structured data (`sameAs`), chat grounding, and territory-specific copy: see §1.3 — GEO collateral is **not** website-only.
+
+Scan-side geographic analytics (§1.1) and campaign-facing GEO content (this subsection) are independent: the QR image URL is static; per-scan geography is computed at redirect time.
+
+### 1.3 Install URLs — iOS & Android (GEO collateral alongside web + smartlink)
+
+Landing-page GEO and answer-engine citations often need **direct storefront HTTPS URLs**, not only the marketing site or universal smartlink.
+
+| Destination | Canonical public HTTPS URL | GEO / locale behaviour |
+|---|---|---|
+| **iOS (App Store)** | `https://apps.apple.com/us/app/quizverse/id6752571885` | Paths include a **storefront segment** (`/us/` here). Swap `us` for another ISO storefront (`in`, `gb`, …) when copy explicitly targets that territory; Apple still routes users appropriately. Align with Quizverse web `sameAs` / `/ai/summary.json`. |
+| **Android (Google Play)** | `https://play.google.com/store/apps/details?id=com.intelliverse.quizverse` | One **global listing** per package ID; Play surfaces localized metadata from the user's Play locale — do **not** hand-roll regional “mirror” URLs. |
+
+**Relationship to §1.1 (scan GEO):** Geography on each scan still comes from **client IP** at smartlink time. Fields such as `platform` / `os` / `device_type` explain whether the redirect went to **iOS** vs **Android** vs **web** — independent of which storefront URL you later cite in GEO content.
+
+**Relationship to §1.2:** Treat **smartlink + S3 QR raster + App Store + Play** as the standard **four-piece citation bundle** for installs; smartlink remains the best single hop from printed QR.
 
 **`gameId` is the load-bearing field for this entire KB.** Every Satori event we emit copies it into `metadata.game_id`, and every Nakama Console game-scoped view filters by exactly that key. Forget to set `gameId` on a new QR and its scans will land in Postgres but disappear from the Nakama Console quizverse tile.
 
@@ -251,7 +290,12 @@ The exporter uses NestJS's `createApplicationContext` (not the HTTP server) and 
 - `intelli-verse-kube-infra/smartlink/deploy.yaml` — smartlink deployment + `DATABASE_URL` + `NAKAMA_*` env
 
 ### Live URLs
-- Public smartlink: https://dl.intelli-verse-x.ai/quizverse
+- Public smartlink (encoded in QR matrix): https://dl.intelli-verse-x.ai/quizverse
+- App Store (iOS): https://apps.apple.com/us/app/quizverse/id6752571885
+- Google Play (Android): https://play.google.com/store/apps/details?id=com.intelliverse.quizverse
+- Public QR PNG (S3 HTTPS): https://intelli-verse-x-media.s3.us-east-1.amazonaws.com/qr-studio/qrs/intelliverse/quizverse.png
+- Public QR PNG alias (same matrix bytes): https://intelli-verse-x-media.s3.us-east-1.amazonaws.com/qr-studio/qrs/quizverse/quizverse_canonical_v2.png
+- Public QR SVG (S3 HTTPS): https://intelli-verse-x-media.s3.us-east-1.amazonaws.com/qr-studio/qrs/intelliverse/quizverse.svg
 - QR Studio dashboard: https://qrstudio.intelli-verse-x.ai
 - Nakama Console: (in-cluster — port-forward `intelliverse-nakama:7351`)
 

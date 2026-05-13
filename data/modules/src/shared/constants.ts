@@ -50,6 +50,7 @@ namespace Constants {
   export const MISSIONS_COLLECTION = "missions";
   export const QUIZ_RESULTS_COLLECTION = "quiz_results";
   export const GAME_REGISTRY_COLLECTION = "game_registry";
+  export const BRACKET_TOURNAMENTS_COLLECTION = "bracket_tournaments";
   // 2026-04 fix — ANALYTICS_COLLECTION used to wrongly point at
   // "analytics_error_events", which caused every legacy event written via
   // LegacyAnalytics.rpcAnalyticsLogEvent and the multi-game backward-compat
