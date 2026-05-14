@@ -333,6 +333,11 @@ declare namespace FantasyLeague {
     function register(initializer: nkruntime.Initializer): void;
 }
 declare namespace FantasyScoring {
+    /** Called from InitModule to pre-create persistent leaderboards that are
+     *  written to by leaderboardRecordWrite at scoring time.  Nakama does NOT
+     *  auto-create a leaderboard on first write — it throws "Leaderboard not
+     *  found" if the row doesn't exist. */
+    function bootstrap(logger: nkruntime.Logger, nk: nkruntime.Nakama): void;
     function register(initializer: nkruntime.Initializer): void;
 }
 declare namespace FantasyTeam {
@@ -2760,10 +2765,10 @@ declare namespace EventBus {
 }
 declare namespace FortuneWheelAdSpin {
     /**
-     * RPC: fortune_wheel_ad_spin
+     * RPC: fortune_wheel_ad_spin (V2)
      *
-     * Grants 1 bonus fortune wheel spin after a rewarded ad completion.
-     * Tier-gated: T1 disabled, T2/T3 have separate caps and cooldowns.
+     * Server-authoritative ad-spin: validates state, picks reward, grants atomically.
+     * No tier-gating. All players: max 3 ad spins per 3-day cycle, 3hr gap.
      */
     function rpcFortuneWheelAdSpin(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkruntime.Nakama, payload: string): string;
     /**

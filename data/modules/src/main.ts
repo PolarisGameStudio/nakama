@@ -353,6 +353,7 @@ function InitModule(ctx: nkruntime.Context, logger: nkruntime.Logger, nk: nkrunt
 
     logger.info("[Fantasy] Registering Scoring Engine RPCs...");
     FantasyScoring.register(initializer);
+    FantasyScoring.bootstrap(logger, nk);
 
     logger.info("[Fantasy] Registering League RPCs...");
     FantasyLeague.register(initializer);

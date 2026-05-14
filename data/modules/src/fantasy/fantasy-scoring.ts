@@ -683,6 +683,24 @@ namespace FantasyScoring {
 
   // ---- Registration ----
 
+  /** Called from InitModule to pre-create persistent leaderboards that are
+   *  written to by leaderboardRecordWrite at scoring time.  Nakama does NOT
+   *  auto-create a leaderboard on first write — it throws "Leaderboard not
+   *  found" if the row doesn't exist. */
+  export function bootstrap(logger: nkruntime.Logger, nk: nkruntime.Nakama): void {
+    var seasons = ["ipl-2026"];
+    for (var i = 0; i < seasons.length; i++) {
+      var seasonId = seasons[i];
+      var lbId = FantasyTypes.LEADERBOARD_SEASON + "_" + seasonId;
+      try {
+        nk.leaderboardCreate(lbId, false, nkruntime.SortOrder.DESCENDING, nkruntime.Operator.BEST, "", {});
+        logger.info("[FantasyScoring] leaderboard ensured: " + lbId);
+      } catch (e: any) {
+        logger.warn("[FantasyScoring] leaderboardCreate skipped for " + lbId + ": " + (e.message || String(e)));
+      }
+    }
+  }
+
   export function register(initializer: nkruntime.Initializer): void {
     initializer.registerRpc("fantasy_scoring_process", rpcProcessBallEvents);
     initializer.registerRpc("fantasy_scoring_finalize", rpcFinalize);
